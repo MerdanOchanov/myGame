@@ -1,19 +1,13 @@
-// Core game data and state
+import { PlayerState } from './Player';
+
 export class GameState {
-  player: any = {};
-  world: any = {};
-  // TODO: ECS, biomes, crafting system
+  playerState: PlayerState;
 
   constructor() {
-    this.initPlayer();
+    this.playerState = new PlayerState();
   }
 
-  private initPlayer() {
-    this.player = {
-      position: { lat: 38.0, lng: 58.0 }, // Пример координат Ашхабада
-      homeCell: null,
-      inventory: [],
-      health: 100,
-    };
+  update() {
+    // Main game loop update
   }
 }
