@@ -1,32 +1,33 @@
+// Player.ts
 export interface Player {
   id: string;
   position: { lat: number; lng: number };
-  homeCell: { lat: number; lng: number };
+  home?: { lat: number; lng: number };
   health: number;
   inventory: any[];
-  isAlive: boolean;
 }
 
-export class PlayerState {
+export class PlayerManager {
   private player: Player;
 
-  constructor() {
+  constructor(id: string) {
     this.player = {
-      id: 'player1',
-      position: { lat: 38.0, lng: 58.0 }, // Туркменистан
-      homeCell: { lat: 38.0, lng: 58.0 },
+      id,
+      position: { lat: 38.0, lng: 58.0 }, // default Turkmenistan
       health: 100,
-      inventory: [],
-      isAlive: true
+      inventory: []
     };
   }
 
-  moveTo(lat: number, lng: number) {
+  setPosition(lat: number, lng: number) {
     this.player.position = { lat, lng };
-    // TODO: check biome, events
   }
 
-  getPlayer() {
-    return this.player;
+  claimHome(homeSystem: any) {
+    const home = homeSystem.claimHome(this.player.id, this.player.position);
+    if (home) {
+      this.player.home = home.position;
+      console.log('Дом успешно занят!');
+    }
   }
 }

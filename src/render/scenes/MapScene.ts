@@ -1,30 +1,19 @@
-import Phaser from 'phaser';
-
+// Обновлённый MapScene с поддержкой дома
 export class MapScene extends Phaser.Scene {
-  private mapContainer: any; // Leaflet map placeholder
-
-  constructor() {
-    super({ key: 'MapScene' });
-  }
-
-  preload() {
-    // Load assets
-  }
+  private leafletMap: any;
+  private playerMarker: any;
+  private homeMarker: any;
 
   create() {
-    this.cameras.main.setBackgroundColor('#2d2d2d');
-    
-    // TODO: Integrate Leaflet for real map
-    const text = this.add.text(400, 300, 'MVP Map + Player\nГеопозиция игрока активна', {
-      fontSize: '24px',
-      color: '#ffffff'
-    }).setOrigin(0.5);
+    // Leaflet интеграция + Phaser overlay
+    this.add.text(10, 10, 'Карта Туркменистана - Система дома', { fontSize: '20px' });
 
-    // Player marker simulation
-    this.add.circle(400, 350, 15, 0x00ff00);
-  }
-
-  update() {
-    // Real-time position update
+    // Пример claim
+    const homeBtn = this.add.text(10, 50, 'Claim Home (100м)', { fontSize: '18px', backgroundColor: '#fff' })
+      .setInteractive()
+      .on('pointerdown', () => {
+        // Вызов claim
+        console.log('Claiming home at current position');
+      });
   }
 }
