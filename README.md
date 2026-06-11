@@ -1,8 +1,9 @@
-# myGame
+# myGame - Survival Turkmenistan
 
-Survival crafting game based on Turkmenistan map.
+Веб-игра на основе реальной карты Туркменистана.
 
-## Tech Stack
-- Vite + TypeScript
-- Phaser 3 (for game canvas) + Leaflet (map)
-- TailwindCSS for responsive UI
+## Запуск
+```bash
+npm install
+npm run dev
+```
