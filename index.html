@@ -3,15 +3,26 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Survival Turkmenistan</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <title>Scientists World</title>
   <style>
-    body { margin: 0; padding: 0; overflow: hidden; background: #000; }
-    #game { width: 100vw; height: 100vh; }
+    html, body { margin: 0; padding: 0; overflow: hidden; background: #000; height: 100%; }
+    #app { position: relative; width: 100vw; height: 100vh; }
+    #map, #phaser-overlay, #ui-root {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+    }
+    #phaser-overlay { pointer-events: none; z-index: 400; }
+    #ui-root { pointer-events: none; z-index: 500; }
   </style>
 </head>
 <body>
-  <div id="game"></div>
+  <div id="app">
+    <div id="map"></div>
+    <div id="phaser-overlay"></div>
+    <div id="ui-root"></div>
+  </div>
   <script type="module" src="/src/main.ts"></script>
 </body>
 </html>
