@@ -16,10 +16,22 @@ export interface Biome {
   dominantColor: RGB;
   createdAt: string;
   seed: string;
+  /** Пауза между сборами материалов в этом биоме; задаётся админом. */
+  collectIntervalSec: number;
 }
 
 export const MIN_BIOME_BLOCKS = 5;
 export const MAX_BIOME_BLOCKS = 40;
+
+export const DEFAULT_COLLECT_INTERVAL_SEC = 10;
+export const MIN_COLLECT_INTERVAL_SEC = 1;
+export const MAX_COLLECT_INTERVAL_SEC = 3600;
+
+export function clampCollectInterval(value: unknown): number {
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n)) return DEFAULT_COLLECT_INTERVAL_SEC;
+  return Math.max(MIN_COLLECT_INTERVAL_SEC, Math.min(MAX_COLLECT_INTERVAL_SEC, n));
+}
 
 export type MaterialCategory = 'plant' | 'fruit' | 'berry' | 'insect';
 

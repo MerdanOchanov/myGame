@@ -6,26 +6,26 @@ import { db, knowledgeProfileRepository, addMaterialToInventory } from './db';
 import { resolveHex, GeoError } from './geo';
 import { InventoryView, MaterialCollectionResult } from './types';
 
-const COLLECT_COOLDOWN_MS = 2000; // basic rate-limit per player (ARCHITECTURE §13)
-
-export type CollectError = GeoError | 'rate_limited' | 'no_biome_here';
+export type CollectError = GeoError | 'collect_cooldown' | 'no_biome_here';
 
 export async function collectMaterial(
   playerId: string,
   proofWithMode: GeoProofWithMode
 ): Promise<MaterialCollectionResult | CollectError> {
-  const lastCollectAt = db.lastCollectAtByPlayerId.get(playerId);
-  const now = Date.now();
-  if (proofWithMode.mode !== 'debug' && lastCollectAt && now - lastCollectAt < COLLECT_COOLDOWN_MS) {
-    return 'rate_limited';
-  }
-
   const cell = await resolveHex(playerId, proofWithMode);
   if (typeof cell === 'string') return cell;
 
   // Collection only works inside admin-created biomes (TZ §6).
   const biome = db.biomesByBlockId.get(blockIdOf(cell.id));
   if (!biome) return 'no_biome_here';
+
+  // Пер-биомный таймер сбора — игровая механика, действует и в debug-режиме.
+  const now = Date.now();
+  const lastCollectAt = db.lastCollectAtByPlayerId.get(playerId);
+  const intervalMs = biome.collectIntervalSec * 1000;
+  if (lastCollectAt && now - lastCollectAt < intervalMs) {
+    return 'collect_cooldown';
+  }
 
   const pool = db.materialPoolsByBiomeId.get(biome.id) ?? [];
   const material = rollMaterialFromPool(pool);
@@ -37,7 +37,12 @@ export async function collectMaterial(
   const inventory = db.inventories.get(playerId);
   const quantity = inventory?.materials.find((s) => s.itemId === material.id)?.quantity ?? 1;
 
-  return { material: toMaterialSummary(material), quantity, poolSize: pool.length };
+  return {
+    material: toMaterialSummary(material),
+    quantity,
+    poolSize: pool.length,
+    nextCollectAt: new Date(now + intervalMs).toISOString(),
+  };
 }
 
 export async function getInventory(playerId: string): Promise<InventoryView> {

@@ -22,6 +22,11 @@ export class OverlayScene extends Phaser.Scene {
     });
   }
 
+  /** Сцена может быть ещё не создана (Phaser грузится асинхронно). */
+  private get booted(): boolean {
+    return Boolean(this.glow && this.add && this.tweens);
+  }
+
   setGlowPosition(x: number, y: number): void {
     this.glow?.setPosition(x, y);
     this.glow?.setVisible(true);
@@ -32,6 +37,7 @@ export class OverlayScene extends Phaser.Scene {
   }
 
   burstAt(x: number, y: number): void {
+    if (!this.booted) return;
     const particleCount = 8;
     for (let i = 0; i < particleCount; i++) {
       const particle = this.add.circle(x, y, 3, 0x00e5ff, 0.9);

@@ -11,7 +11,9 @@ Supabase Dashboard → SQL Editor → New query → выполнить по по
 1. `supabase/migrations/0001_init.sql` (если ещё не применяли);
 2. `supabase/migrations/0002_blocks_and_admin_biomes.sql` — блоки по 7 ячеек
    и админ-биомы. **Стирает** старые дома/биомы/материалы/инвентари
-   (аккаунты и крысы остаются).
+   (аккаунты и крысы остаются);
+3. `supabase/migrations/0003_collect_interval.sql` — пер-биомный интервал
+   сбора, управляемый админом.
 
 Клиенты read-only; пишет только Edge Function через service role.
 

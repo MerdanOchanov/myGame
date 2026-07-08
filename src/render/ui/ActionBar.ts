@@ -43,4 +43,25 @@ export class ActionBar {
       btn.classList.toggle('sw-active', actionId === id);
     }
   }
+
+  /** Обратный отсчёт на кнопке «Собрать»; null — таймер не активен. */
+  setCollectCooldown(remainingSec: number | null): void {
+    const btn = this.buttons.get('collect');
+    if (!btn) return;
+    if (remainingSec === null || remainingSec <= 0) {
+      btn.disabled = false;
+      btn.innerHTML = `<span class="sw-action-icon">🧺</span><span>Собрать</span>`;
+    } else {
+      btn.disabled = true;
+      btn.innerHTML = `<span class="sw-action-icon">⏳</span><span>${formatRemaining(remainingSec)}</span>`;
+    }
+  }
+}
+
+function formatRemaining(totalSec: number): string {
+  const sec = Math.ceil(totalSec);
+  if (sec < 60) return `${sec} с`;
+  const min = Math.floor(sec / 60);
+  const rest = sec % 60;
+  return rest === 0 ? `${min} мин` : `${min}:${String(rest).padStart(2, '0')}`;
 }

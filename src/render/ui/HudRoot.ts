@@ -22,8 +22,9 @@ const ERROR_RU: Record<string, string> = {
   accuracy: 'GPS-сигнал слишком неточный',
   stale_timestamp: 'устаревшие координаты',
   implausible_speed: 'слишком быстрое перемещение — координаты отклонены',
-  rate_limited: 'слишком часто — подождите пару секунд',
+  collect_cooldown: 'таймер сбора ещё не истёк — подождите',
   no_biome_here: 'здесь нет биома — собирать нечего',
+  unknown_biome: 'биом не найден',
   block_occupied: 'этот блок уже занят',
   player_already_has_home: 'у вас уже есть дом',
   no_existing_home: 'у вас ещё нет дома',
@@ -74,6 +75,8 @@ export class HudRoot {
   private lastCenter: { lat: number; lng: number } | null = null;
   private adminBlockIds: string[] = [];
   private adminColor: { r: number; g: number; b: number } | null = null;
+  /** Момент, когда снова можно собирать (мс epoch); null — можно сейчас. */
+  private nextCollectAtMs: number | null = null;
 
   private constructor(
     uiRootEl: HTMLElement,
@@ -125,7 +128,9 @@ export class HudRoot {
     this.adminTool = new AdminTool({
       onStartSelection: () => this.startAdminSelection(),
       onCancelSelection: () => this.mapView.cancelRectangleSelection(),
-      onCreateBiome: (password) => void this.handleCreateBiome(password),
+      onCreateBiome: (password, intervalSec) => void this.handleCreateBiome(password, intervalSec),
+      onSetCollectInterval: (password, biomeId, intervalSec) =>
+        void this.handleSetCollectInterval(password, biomeId, intervalSec),
     });
 
     uiRootEl.append(this.toasts.element, this.topBar.element, this.actionBar.element, this.drawer.element);
@@ -142,7 +147,26 @@ export class HudRoot {
     hud.topBar.updateState(session.playerState);
     await hud.refreshInventoryAndLab();
     setInterval(() => void hud.refreshSilently(), POLL_INTERVAL_MS);
+    setInterval(() => hud.tickCollectCooldown(), 1000);
     return hud;
+  }
+
+  /** Ежесекундный тик обратного отсчёта на кнопке «Собрать». */
+  private tickCollectCooldown(): void {
+    if (this.nextCollectAtMs === null) return;
+    const remaining = (this.nextCollectAtMs - Date.now()) / 1000;
+    if (remaining <= 0) {
+      this.nextCollectAtMs = null;
+      this.actionBar.setCollectCooldown(null);
+    } else {
+      this.actionBar.setCollectCooldown(remaining);
+    }
+  }
+
+  private setNextCollectAt(iso: string | undefined): void {
+    this.nextCollectAtMs = iso ? new Date(iso).getTime() : null;
+    this.tickCollectCooldown();
+    if (this.nextCollectAtMs === null) this.actionBar.setCollectCooldown(null);
   }
 
   // ------------------------------------------------------------ навигация
@@ -214,6 +238,8 @@ export class HudRoot {
     this.lastCenter = layers.playerHexCell.center;
     this.currentBlockId = layers.playerHexCell.blockId ?? null;
     this.currentBiomeLabel = layers.biome ? BIOME_LABELS_RU[layers.biome.type] : null;
+    this.adminTool.setCurrentBiome(layers.biome ?? null);
+    this.setNextCollectAt(layers.nextCollectAt);
 
     this.mapView.showPlayerPosition(layers.playerHexCell.center.lat, layers.playerHexCell.center.lng);
     if (!this.hasCenteredOnce) {
@@ -276,6 +302,7 @@ export class HudRoot {
       }
       if (this.lastCenter) this.phaserLayer.playCollectBurst(this.mapView, this.lastCenter.lat, this.lastCenter.lng);
       this.toasts.show(`🧺 Собрано: ${result.material.name} ×${result.quantity} (в биоме ${result.poolSize} видов)`, 'success');
+      this.setNextCollectAt(result.nextCollectAt);
       await this.refreshInventoryAndLab();
     } catch (err) {
       this.toasts.show(`Сбор не удался: ${ru(err)}`, 'error');
@@ -342,7 +369,7 @@ export class HudRoot {
     });
   }
 
-  private async handleCreateBiome(password: string): Promise<void> {
+  private async handleCreateBiome(password: string, collectIntervalSec: number): Promise<void> {
     if (!password) {
       this.toasts.show('Введите админ-пароль.', 'error');
       return;
@@ -355,6 +382,7 @@ export class HudRoot {
       const result = await this.client.adminGenerateBiome(
         this.adminBlockIds,
         this.adminColor ?? { r: 154, g: 205, b: 90 },
+        collectIntervalSec,
         password
       );
       if (typeof result === 'string') {
@@ -363,7 +391,7 @@ export class HudRoot {
       }
       this.toasts.show(
         `🌍 Биом «${BIOME_LABELS_RU[result.biome.type]}» создан: ${result.biome.blockIds.length} блоков, ` +
-        `${result.materialCount} видов материалов`,
+        `${result.materialCount} видов материалов, сбор раз в ${result.biome.collectIntervalSec} с`,
         'success'
       );
       this.adminTool.clearSelection();
@@ -373,6 +401,29 @@ export class HudRoot {
       await this.refreshSilently();
     } catch (err) {
       this.toasts.show(`Биом не создан: ${ru(err)}`, 'error');
+    }
+  }
+
+  private async handleSetCollectInterval(
+    password: string,
+    biomeId: string,
+    collectIntervalSec: number
+  ): Promise<void> {
+    if (!password) {
+      this.toasts.show('Введите админ-пароль.', 'error');
+      return;
+    }
+    try {
+      const result = await this.client.adminSetCollectInterval(biomeId, collectIntervalSec, password);
+      if (typeof result === 'string') {
+        this.toasts.show(`Интервал не обновлён: ${ru(result)}`, 'error');
+        return;
+      }
+      this.adminTool.setCurrentBiome(result);
+      this.toasts.show(`⏱️ Интервал сбора в биоме: ${result.collectIntervalSec} с`, 'success');
+      await this.refreshSilently();
+    } catch (err) {
+      this.toasts.show(`Интервал не обновлён: ${ru(err)}`, 'error');
     }
   }
 }

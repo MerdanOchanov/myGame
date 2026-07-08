@@ -12,8 +12,8 @@ import {
   craftMedicineRecipe, createInitialStates, applyEffectToStates, isRatDead,
   fnv1aHash,
   MIN_CRAFT_MATERIALS, HOME_TRANSFER_COOLDOWN_MS, FREE_RAT_DRIP_INTERVAL_MS,
-  COLLECT_COOLDOWN_MS, NEARBY_HOME_RADIUS_METERS,
-  MIN_BIOME_BLOCKS, MAX_BIOME_BLOCKS,
+  NEARBY_HOME_RADIUS_METERS,
+  MIN_BIOME_BLOCKS, MAX_BIOME_BLOCKS, clampCollectInterval,
 } from '../_shared/gameRules.ts';
 
 type Mode = 'production' | 'debug';
@@ -95,6 +95,7 @@ async function biomeAtBlock(db: SupabaseClient, blockId: string) {
 
 function biomeToDto(biome: {
   id: string; type: string; block_ids: string[]; dominant_color: RGB; created_at: string; seed: string;
+  collect_interval_sec: number;
 }) {
   return {
     id: biome.id,
@@ -103,6 +104,7 @@ function biomeToDto(biome: {
     dominantColor: biome.dominant_color,
     createdAt: biome.created_at,
     seed: biome.seed,
+    collectIntervalSec: biome.collect_interval_sec,
   };
 }
 
@@ -268,14 +270,22 @@ async function handleMapLayers(
       .lte('min_lat', vb.maxLat).gte('max_lat', vb.minLat)
       .lte('min_lng', vb.maxLng).gte('max_lng', vb.minLng);
   }
-  const [{ data: biomes }, { data: nearby }] = await Promise.all([
+  const [{ data: biomes }, { data: nearby }, { data: player }] = await Promise.all([
     biomesQuery.limit(100),
     db.rpc('nearby_homes', {
       p_lat: resolved.center.lat,
       p_lng: resolved.center.lng,
       p_radius_m: NEARBY_HOME_RADIUS_METERS,
     }),
+    db.from('players').select('last_collect_at').eq('id', playerId).single(),
   ]);
+
+  // Активный таймер сбора: последний сбор + интервал текущего биома.
+  let nextCollectAt: string | undefined;
+  if (biome && player?.last_collect_at) {
+    const next = new Date(player.last_collect_at).getTime() + biome.collect_interval_sec * 1000;
+    if (next > Date.now()) nextCollectAt = new Date(next).toISOString();
+  }
 
   return {
     playerHexCell: {
@@ -287,6 +297,7 @@ async function handleMapLayers(
     biome: biome ? biomeToDto(biome) : undefined,
     biomes: (biomes ?? []).map(biomeToDto),
     nearbyHomes: (nearby ?? []).map(homeToDto),
+    nextCollectAt,
   };
 }
 
@@ -337,7 +348,10 @@ async function handleTransferHome(db: SupabaseClient, playerId: string, pm: Proo
 async function handleAdminGenerateBiome(
   db: SupabaseClient,
   playerId: string,
-  payload: { blockIds: string[]; dominantColor: RGB; password: string; debug?: boolean }
+  payload: {
+    blockIds: string[]; dominantColor: RGB; collectIntervalSec?: number;
+    password: string; debug?: boolean;
+  }
 ) {
   const expected = Deno.env.get('ADMIN_PASSWORD');
   if (!expected || payload.password !== expected) return 'admin_forbidden';
@@ -364,6 +378,7 @@ async function handleAdminGenerateBiome(
     type,
     block_ids: blockIds,
     dominant_color: payload.dominantColor,
+    collect_interval_sec: clampCollectInterval(payload.collectIntervalSec),
     min_lat: Math.min(...lats) - margin,
     min_lng: Math.min(...lngs) - margin,
     max_lat: Math.max(...lats) + margin,
@@ -399,14 +414,24 @@ async function handleAdminGenerateBiome(
   return { biome: biomeToDto(biome!), materialCount: pool.length };
 }
 
-async function handleCollectMaterial(db: SupabaseClient, playerId: string, pm: ProofWithMode) {
-  if (pm.mode === 'production') {
-    const { data: player } = await db.from('players').select('last_collect_at').eq('id', playerId).single();
-    if (player?.last_collect_at && Date.now() - new Date(player.last_collect_at).getTime() < COLLECT_COOLDOWN_MS) {
-      return 'rate_limited';
-    }
-  }
+async function handleAdminSetCollectInterval(
+  db: SupabaseClient,
+  payload: { biomeId: string; collectIntervalSec: number; password: string }
+) {
+  const expected = Deno.env.get('ADMIN_PASSWORD');
+  if (!expected || payload.password !== expected) return 'admin_forbidden';
 
+  const { data: updated, error } = await db.from('biomes')
+    .update({ collect_interval_sec: clampCollectInterval(payload.collectIntervalSec) })
+    .eq('id', payload.biomeId)
+    .select('*')
+    .maybeSingle();
+
+  if (error || !updated) return 'unknown_biome';
+  return biomeToDto(updated);
+}
+
+async function handleCollectMaterial(db: SupabaseClient, playerId: string, pm: ProofWithMode) {
   const resolved = await resolveHexFor(db, playerId, pm);
   if (typeof resolved === 'string') return resolved;
 
@@ -414,12 +439,21 @@ async function handleCollectMaterial(db: SupabaseClient, playerId: string, pm: P
   const biome = await biomeAtBlock(db, blockId);
   if (!biome) return 'no_biome_here';
 
+  // Пер-биомный таймер сбора (задаёт админ) — игровая механика, действует
+  // во всех режимах, включая debug.
+  const { data: player } = await db.from('players').select('last_collect_at').eq('id', playerId).single();
+  const intervalMs = biome.collect_interval_sec * 1000;
+  const now = Date.now();
+  if (player?.last_collect_at && now - new Date(player.last_collect_at).getTime() < intervalMs) {
+    return 'collect_cooldown';
+  }
+
   const { data: pool } = await db.from('materials').select('*').eq('biome_id', biome.id);
   if (!pool || pool.length === 0) return 'no_biome_here';
 
   const material = pool[Math.floor(Math.random() * pool.length)];
 
-  await db.from('players').update({ last_collect_at: new Date().toISOString() }).eq('id', playerId);
+  await db.from('players').update({ last_collect_at: new Date(now).toISOString() }).eq('id', playerId);
 
   const { data: stack } = await db.from('inventories')
     .select('quantity').eq('player_id', playerId).eq('item_id', material.id).maybeSingle();
@@ -433,6 +467,7 @@ async function handleCollectMaterial(db: SupabaseClient, playerId: string, pm: P
     material: { id: material.id, name: material.name, category: material.category },
     quantity,
     poolSize: pool.length,
+    nextCollectAt: new Date(now + intervalMs).toISOString(),
   };
 }
 
@@ -669,7 +704,16 @@ Deno.serve(async (req: Request) => {
       case 'adminGenerateBiome': {
         const result = await handleAdminGenerateBiome(
           db, playerId,
-          payload as unknown as { blockIds: string[]; dominantColor: RGB; password: string; debug?: boolean }
+          payload as unknown as {
+            blockIds: string[]; dominantColor: RGB; collectIntervalSec?: number;
+            password: string; debug?: boolean;
+          }
+        );
+        return typeof result === 'string' ? fail(result) : ok(result);
+      }
+      case 'adminSetCollectInterval': {
+        const result = await handleAdminSetCollectInterval(
+          db, payload as unknown as { biomeId: string; collectIntervalSec: number; password: string }
         );
         return typeof result === 'string' ? fail(result) : ok(result);
       }

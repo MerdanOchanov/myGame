@@ -55,10 +55,19 @@ export async function getMapLayers(
     (home) => haversineDistanceMeters(home.position, cell.center) <= NEARBY_HOME_RADIUS_METERS
   );
 
+  // Активный таймер сбора: последний сбор + интервал текущего биома.
+  let nextCollectAt: string | undefined;
+  const lastCollectAt = db.lastCollectAtByPlayerId.get(playerId);
+  if (biome && lastCollectAt) {
+    const next = lastCollectAt + biome.collectIntervalSec * 1000;
+    if (next > Date.now()) nextCollectAt = new Date(next).toISOString();
+  }
+
   return {
     playerHexCell: { ...cell, blockId, biomeId: biome?.id },
     biome,
     biomes,
     nearbyHomes,
+    nextCollectAt,
   };
 }

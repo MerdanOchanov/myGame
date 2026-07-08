@@ -26,17 +26,27 @@ export class GamePhaserLayer {
     });
   }
 
+  // Декоративные эффекты никогда не должны ломать игровой поток — любые
+  // сбои Phaser (не загрузился, нет WebGL) молча игнорируются.
   syncGlowToPosition(mapView: MapView, latLng: { lat: number; lng: number } | null): void {
-    if (!latLng) {
-      this.scene.hideGlow();
-      return;
+    try {
+      if (!latLng) {
+        this.scene.hideGlow();
+        return;
+      }
+      const point = mapView.containerPointFor(latLng.lat, latLng.lng);
+      this.scene.setGlowPosition(point.x, point.y);
+    } catch {
+      // ignore decorative failures
     }
-    const point = mapView.containerPointFor(latLng.lat, latLng.lng);
-    this.scene.setGlowPosition(point.x, point.y);
   }
 
   playCollectBurst(mapView: MapView, lat: number, lng: number): void {
-    const point = mapView.containerPointFor(lat, lng);
-    this.scene.burstAt(point.x, point.y);
+    try {
+      const point = mapView.containerPointFor(lat, lng);
+      this.scene.burstAt(point.x, point.y);
+    } catch {
+      // ignore decorative failures
+    }
   }
 }

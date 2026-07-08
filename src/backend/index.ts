@@ -7,7 +7,7 @@ export type { GeoError } from './geo';
 export { claimHome, transferHome, getMapLayers } from './home';
 export { collectMaterial, getInventory } from './materials';
 export type { CollectError } from './materials';
-export { adminGenerateBiome } from './admin';
+export { adminGenerateBiome, adminSetCollectInterval } from './admin';
 export type { AdminError, AdminBiomeResult } from './admin';
 export { craftMedicine, applyMedicine } from './medicine';
 export type { MedicineCraftError, ApplyMedicineError } from './medicine';

@@ -17,7 +17,15 @@ export const RULES_VERSION = 'v1';
 export const MIN_CRAFT_MATERIALS = 3;
 export const HOME_TRANSFER_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 export const FREE_RAT_DRIP_INTERVAL_MS = 24 * 60 * 60 * 1000;
-export const COLLECT_COOLDOWN_MS = 2000;
+export const DEFAULT_COLLECT_INTERVAL_SEC = 10;
+export const MIN_COLLECT_INTERVAL_SEC = 1;
+export const MAX_COLLECT_INTERVAL_SEC = 3600;
+
+export function clampCollectInterval(value: unknown): number {
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n)) return DEFAULT_COLLECT_INTERVAL_SEC;
+  return Math.max(MIN_COLLECT_INTERVAL_SEC, Math.min(MAX_COLLECT_INTERVAL_SEC, n));
+}
 export const NEARBY_HOME_RADIUS_METERS = 1000;
 
 // ------------------------------------------------------------------ types

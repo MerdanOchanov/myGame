@@ -1,4 +1,4 @@
-import { Biome, RGB, MIN_BIOME_BLOCKS, MAX_BIOME_BLOCKS } from './Biome';
+import { Biome, RGB, MIN_BIOME_BLOCKS, MAX_BIOME_BLOCKS, DEFAULT_COLLECT_INTERVAL_SEC } from './Biome';
 import { createAdminBiome } from './BiomeGenerator';
 import { isBlockId } from '../geo/HexGrid';
 
@@ -17,6 +17,7 @@ export function createBiomeOnBlocks(
   repo: BiomeRepository,
   blockIds: string[],
   dominantColor: RGB,
+  collectIntervalSec: number = DEFAULT_COLLECT_INTERVAL_SEC,
   now: Date = new Date()
 ): Biome | AdminBiomeError {
   const unique = [...new Set(blockIds)];
@@ -25,7 +26,7 @@ export function createBiomeOnBlocks(
   if (!unique.every(isBlockId)) return 'bad_block_ids';
   if (unique.some((blockId) => repo.getByBlockId(blockId))) return 'blocks_taken';
 
-  const biome = createAdminBiome(unique, dominantColor, now);
+  const biome = createAdminBiome(unique, dominantColor, collectIntervalSec, now);
   repo.save(biome);
   return biome;
 }

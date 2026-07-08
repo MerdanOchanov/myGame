@@ -1,4 +1,7 @@
-import { RGB, colorToBiomeType, BIOME_LABELS_RU, MIN_BIOME_BLOCKS, MAX_BIOME_BLOCKS } from '../../core/biome/Biome';
+import {
+  RGB, Biome, colorToBiomeType, BIOME_LABELS_RU, MIN_BIOME_BLOCKS, MAX_BIOME_BLOCKS,
+  DEFAULT_COLLECT_INTERVAL_SEC, MIN_COLLECT_INTERVAL_SEC, MAX_COLLECT_INTERVAL_SEC, clampCollectInterval,
+} from '../../core/biome/Biome';
 import { ensureStylesInjected } from './styles';
 
 const PASSWORD_STORAGE_KEY = 'scientists-world:adminPassword';
@@ -11,7 +14,8 @@ export interface AdminSelection {
 export interface AdminToolCallbacks {
   onStartSelection: () => void;
   onCancelSelection: () => void;
-  onCreateBiome: (password: string) => void;
+  onCreateBiome: (password: string, collectIntervalSec: number) => void;
+  onSetCollectInterval: (password: string, biomeId: string, collectIntervalSec: number) => void;
 }
 
 // Панель админа: пароль, выделение участка двумя кликами, предпросмотр
@@ -22,8 +26,13 @@ export class AdminTool {
   private readonly selectBtn: HTMLButtonElement;
   private readonly createBtn: HTMLButtonElement;
   private readonly previewEl: HTMLDivElement;
+  private readonly intervalInput: HTMLInputElement;
+  private readonly currentBiomeEl: HTMLDivElement;
+  private readonly currentIntervalInput: HTMLInputElement;
+  private readonly setIntervalBtn: HTMLButtonElement;
   private selecting = false;
   private selection: AdminSelection | null = null;
+  private currentBiome: Biome | null = null;
 
   constructor(private readonly callbacks: AdminToolCallbacks) {
     ensureStylesInjected();
@@ -43,6 +52,19 @@ export class AdminTool {
     });
     passRow.appendChild(this.passwordInput);
     this.element.appendChild(passRow);
+
+    const intervalRow = document.createElement('div');
+    intervalRow.className = 'sw-row';
+    intervalRow.append('Интервал сбора, сек: ');
+    this.intervalInput = document.createElement('input');
+    this.intervalInput.type = 'number';
+    this.intervalInput.min = String(MIN_COLLECT_INTERVAL_SEC);
+    this.intervalInput.max = String(MAX_COLLECT_INTERVAL_SEC);
+    this.intervalInput.step = '1';
+    this.intervalInput.value = String(DEFAULT_COLLECT_INTERVAL_SEC);
+    this.intervalInput.style.width = '5em';
+    intervalRow.appendChild(this.intervalInput);
+    this.element.appendChild(intervalRow);
 
     const btnRow = document.createElement('div');
     btnRow.className = 'sw-row';
@@ -65,7 +87,9 @@ export class AdminTool {
     this.createBtn.className = 'sw-btn';
     this.createBtn.textContent = 'Создать биом';
     this.createBtn.disabled = true;
-    this.createBtn.addEventListener('click', () => this.callbacks.onCreateBiome(this.passwordInput.value));
+    this.createBtn.addEventListener('click', () =>
+      this.callbacks.onCreateBiome(this.passwordInput.value, clampCollectInterval(this.intervalInput.value))
+    );
     btnRow.appendChild(this.createBtn);
 
     this.element.appendChild(btnRow);
@@ -76,6 +100,55 @@ export class AdminTool {
       `Выделите прямоугольник двумя кликами по карте. Биом: от ${MIN_BIOME_BLOCKS} до ${MAX_BIOME_BLOCKS} блоков (по 7 ячеек). ` +
       'Тип определяется по преобладающему цвету карты: вода → водный, пески → пустыня, застройка → каменные джунгли.';
     this.element.appendChild(this.previewEl);
+
+    // ---- управление текущим биомом (интервал сбора) ----
+    this.currentBiomeEl = document.createElement('div');
+    this.currentBiomeEl.className = 'sw-card sw-muted';
+    this.currentBiomeEl.textContent = 'Встаньте в биом, чтобы управлять его интервалом сбора.';
+    this.element.appendChild(this.currentBiomeEl);
+
+    const setRow = document.createElement('div');
+    setRow.className = 'sw-row';
+    setRow.append('Новый интервал, сек: ');
+    this.currentIntervalInput = document.createElement('input');
+    this.currentIntervalInput.type = 'number';
+    this.currentIntervalInput.min = String(MIN_COLLECT_INTERVAL_SEC);
+    this.currentIntervalInput.max = String(MAX_COLLECT_INTERVAL_SEC);
+    this.currentIntervalInput.step = '1';
+    this.currentIntervalInput.style.width = '5em';
+    setRow.appendChild(this.currentIntervalInput);
+
+    this.setIntervalBtn = document.createElement('button');
+    this.setIntervalBtn.className = 'sw-btn-secondary';
+    this.setIntervalBtn.textContent = 'Обновить интервал';
+    this.setIntervalBtn.disabled = true;
+    this.setIntervalBtn.addEventListener('click', () => {
+      if (!this.currentBiome) return;
+      this.callbacks.onSetCollectInterval(
+        this.passwordInput.value,
+        this.currentBiome.id,
+        clampCollectInterval(this.currentIntervalInput.value)
+      );
+    });
+    setRow.appendChild(this.setIntervalBtn);
+    this.element.appendChild(setRow);
+  }
+
+  /** Вызывается HudRoot при каждом обновлении карты. */
+  setCurrentBiome(biome: Biome | null): void {
+    this.currentBiome = biome;
+    this.setIntervalBtn.disabled = !biome;
+    if (biome) {
+      this.currentBiomeEl.innerHTML =
+        `Текущий биом: <b>${BIOME_LABELS_RU[biome.type]}</b> (${biome.blockIds.length} блоков) — ` +
+        `интервал сбора <b>${biome.collectIntervalSec} с</b>`;
+      if (!this.currentIntervalInput.value) {
+        this.currentIntervalInput.value = String(biome.collectIntervalSec);
+      }
+    } else {
+      this.currentBiomeEl.textContent = 'Встаньте в биом, чтобы управлять его интервалом сбора.';
+      this.currentIntervalInput.value = '';
+    }
   }
 
   setSelecting(selecting: boolean): void {

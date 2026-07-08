@@ -40,12 +40,16 @@ export interface MapLayers {
   /** All biomes intersecting the requested viewport. */
   biomes: Biome[];
   nearbyHomes: LaboratoryHome[];
+  /** Когда игроку снова можно собирать (ISO), если известен активный таймер. */
+  nextCollectAt?: string;
 }
 
 export interface MaterialCollectionResult {
   material: MaterialSummary;
   quantity: number;
   poolSize: number;
+  /** Когда можно собирать снова (ISO) — интервал задаёт админ биома. */
+  nextCollectAt: string;
 }
 
 export interface InventoryView {
