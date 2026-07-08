@@ -1,0 +1,4 @@
+project_id = "myGame"
+
+[functions.game-api]
+verify_jwt = true

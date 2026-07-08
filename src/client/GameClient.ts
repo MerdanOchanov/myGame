@@ -1,6 +1,13 @@
-import * as backend from '../backend';
+import * as mockBackend from '../backend';
+import * as remoteBackend from '../backendRemote';
 import { GeoProof, GeoProofWithMode, PositionMode } from '../core/geo/GeoPosition';
 import { HexCell } from '../core/geo/HexCell';
+
+// When Supabase env vars are present the remote backend (game-api Edge
+// Function) is used; otherwise the in-memory mock keeps local dev and the
+// no-env Vercel deploy fully playable.
+const backend = remoteBackend.isConfigured() ? remoteBackend : mockBackend;
+export const usingRemoteBackend = remoteBackend.isConfigured();
 
 const DEVICE_ID_STORAGE_KEY = 'scientists-world:deviceId';
 
@@ -14,16 +21,14 @@ function getOrCreateDeviceId(): string {
 }
 
 // Sole seam UI/render code talks to. Turns navigator.geolocation and debug
-// map clicks into GeoProofWithMode, and holds the session id — this is the
-// one file that would need to change when swapping the mock backend for a
-// real Supabase client.
+// map clicks into GeoProofWithMode, and holds the session id.
 export class GameClient {
   private playerId: string | null = null;
   private mode: PositionMode = 'debug';
   private debugPosition: { lat: number; lng: number } | null = null;
   private listeners = new Set<() => void>();
 
-  async init(): Promise<backend.PlayerSession> {
+  async init(): Promise<mockBackend.PlayerSession> {
     const session = await backend.createOrResumeSession(getOrCreateDeviceId());
     this.playerId = session.playerId;
     return session;
@@ -83,7 +88,7 @@ export class GameClient {
     return { proof, mode: 'production' };
   }
 
-  async resolveHex(): Promise<HexCell | backend.GeoError> {
+  async resolveHex(): Promise<HexCell | mockBackend.GeoError> {
     return backend.resolveHex(this.currentPlayerId, await this.currentProof());
   }
 
