@@ -1,5 +1,5 @@
 import {
-  RGB, Biome, colorToBiomeType, BIOME_LABELS_RU, MIN_BIOME_BLOCKS, MAX_BIOME_BLOCKS,
+  RGB, Biome, BIOME_LABELS_RU, MIN_BIOME_CELLS, MAX_BIOME_CELLS, CELLS_PER_BLOCK, MIN_AREA_COVERAGE,
   DEFAULT_COLLECT_INTERVAL_SEC, MIN_COLLECT_INTERVAL_SEC, MAX_COLLECT_INTERVAL_SEC, clampCollectInterval,
 } from '../../core/biome/Biome';
 import { ensureStylesInjected } from './styles';
@@ -97,8 +97,10 @@ export class AdminTool {
     this.previewEl = document.createElement('div');
     this.previewEl.className = 'sw-card sw-muted';
     this.previewEl.textContent =
-      `Выделите прямоугольник двумя кликами по карте. Биом: от ${MIN_BIOME_BLOCKS} до ${MAX_BIOME_BLOCKS} блоков (по 7 ячеек). ` +
-      'Тип определяется по преобладающему цвету карты: вода → водный, пески → пустыня, застройка → каменные джунгли.';
+      'Выделите прямоугольник двумя кликами по карте (размер не ограничен). ' +
+      `В нём разбросается несколько биомов (${MIN_BIOME_CELLS}–${MAX_BIOME_CELLS} ячеек каждый), ` +
+      `покрывая не менее ${Math.round(MIN_AREA_COVERAGE * 100)}% площади. Тип каждого биома — по ` +
+      'преобладающему цвету карты в его месте: вода → водный, пески → пустыня, застройка → каменные джунгли.';
     this.element.appendChild(this.previewEl);
 
     // ---- управление текущим биомом (интервал сбора) ----
@@ -160,21 +162,21 @@ export class AdminTool {
     this.selection = selection;
     this.setSelecting(false);
 
-    const count = selection.blockIds.length;
-    const okCount = count >= MIN_BIOME_BLOCKS && count <= MAX_BIOME_BLOCKS;
-    const parts: string[] = [`Блоков в выделении: <b>${count}</b> (нужно ${MIN_BIOME_BLOCKS}–${MAX_BIOME_BLOCKS})`];
+    const blocks = selection.blockIds.length;
+    const cells = blocks * CELLS_PER_BLOCK;
+    const okCount = blocks >= 1;
+    const parts: string[] = [
+      `В выделении: <b>${blocks}</b> блоков (${cells} ячеек)`,
+      `Будет создано несколько биомов, покрывающих ≥${Math.round(MIN_AREA_COVERAGE * 100)}% участка.`,
+    ];
 
     if (selection.dominantColor) {
       const { r, g, b } = selection.dominantColor;
-      const type = colorToBiomeType(selection.dominantColor);
-      parts.push(`Преобладающий цвет: <span class="sw-color-swatch" style="background: rgb(${r},${g},${b})"></span> rgb(${r},${g},${b})`);
-      parts.push(`Тип биома: <b>${BIOME_LABELS_RU[type]}</b>`);
+      parts.push(`Средний цвет участка: <span class="sw-color-swatch" style="background: rgb(${r},${g},${b})"></span> rgb(${r},${g},${b}) (каждый биом типизируется отдельно)`);
     } else {
       parts.push('⚠️ Не удалось прочитать цвет карты — тип определит сервер по fallback-правилу.');
     }
-    if (!okCount) {
-      parts.push(count < MIN_BIOME_BLOCKS ? '⚠️ Слишком маленький участок.' : '⚠️ Слишком большой участок.');
-    }
+    if (!okCount) parts.push('⚠️ Пустое выделение.');
 
     this.previewEl.innerHTML = parts.join('<br>');
     this.createBtn.disabled = !okCount;

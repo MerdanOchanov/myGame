@@ -15,9 +15,9 @@ import type { GeoError } from '../backend/geo';
 import type { CollectError } from '../backend/materials';
 import type { MedicineCraftError, ApplyMedicineError } from '../backend/medicine';
 import type { LabTestError } from '../backend/lab';
-import type { AdminError, AdminBiomeResult } from '../backend/admin';
+import type { AdminError, AdminBiomeSpec, AdminBatchResult } from '../backend/admin';
 import type { HomeClaimError } from '../core/home/HomeClaimService';
-import type { RGB, Biome } from '../core/biome/Biome';
+import type { Biome } from '../core/biome/Biome';
 
 const url = import.meta.env.VITE_SUPABASE_URL;
 const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -95,14 +95,14 @@ export async function getMapLayers(
   return invoke<MapLayers>('mapLayers', { proofWithMode, viewBounds }) as Promise<MapLayers | GeoError>;
 }
 
-export async function adminGenerateBiome(
+export async function adminGenerateBiomes(
   _playerId: string,
-  payload: { blockIds: string[]; dominantColor: RGB; collectIntervalSec: number; password: string }
-): Promise<AdminBiomeResult | AdminError> {
-  return invoke<AdminBiomeResult>('adminGenerateBiome', {
+  payload: { biomes: AdminBiomeSpec[]; collectIntervalSec: number; password: string }
+): Promise<AdminBatchResult | AdminError> {
+  return invoke<AdminBatchResult>('adminGenerateBiomes', {
     ...payload,
     debug: false,
-  }) as Promise<AdminBiomeResult | AdminError>;
+  }) as Promise<AdminBatchResult | AdminError>;
 }
 
 export async function adminSetCollectInterval(

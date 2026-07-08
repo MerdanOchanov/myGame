@@ -65,6 +65,33 @@ export function isBlockId(id: string): boolean {
   }
 }
 
+/** Соседние блоки (6 смежных res-11 сот). */
+export function blockNeighbors(blockId: string): string[] {
+  return gridDisk(blockId, 1).filter((b) => b !== blockId);
+}
+
+/** Ограничивающий прямоугольник по центрам блоков (+небольшой отступ). */
+export function blocksBoundingBox(
+  blockIds: string[],
+  marginDeg = 0.0004
+): { minLat: number; minLng: number; maxLat: number; maxLng: number } | null {
+  if (blockIds.length === 0) return null;
+  let minLat = Infinity, minLng = Infinity, maxLat = -Infinity, maxLng = -Infinity;
+  for (const blockId of blockIds) {
+    const { lat, lng } = blockCenter(blockId);
+    if (lat < minLat) minLat = lat;
+    if (lat > maxLat) maxLat = lat;
+    if (lng < minLng) minLng = lng;
+    if (lng > maxLng) maxLng = lng;
+  }
+  return {
+    minLat: minLat - marginDeg,
+    minLng: minLng - marginDeg,
+    maxLat: maxLat + marginDeg,
+    maxLng: maxLng + marginDeg,
+  };
+}
+
 /** All blocks whose center falls inside the lat/lng rectangle. */
 export function blocksInRectangle(bounds: {
   minLat: number; minLng: number; maxLat: number; maxLng: number;

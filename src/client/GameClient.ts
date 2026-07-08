@@ -104,13 +104,12 @@ export class GameClient {
     return backend.getMapLayers(this.currentPlayerId, await this.currentProof(), viewBounds);
   }
 
-  async adminGenerateBiome(
-    blockIds: string[],
-    dominantColor: { r: number; g: number; b: number },
+  async adminGenerateBiomes(
+    biomes: { blockIds: string[]; dominantColor: { r: number; g: number; b: number } }[],
     collectIntervalSec: number,
     password: string
   ) {
-    return backend.adminGenerateBiome(this.currentPlayerId, { blockIds, dominantColor, collectIntervalSec, password });
+    return backend.adminGenerateBiomes(this.currentPlayerId, { biomes, collectIntervalSec, password });
   }
 
   async adminSetCollectInterval(biomeId: string, collectIntervalSec: number, password: string) {

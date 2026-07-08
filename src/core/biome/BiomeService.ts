@@ -11,8 +11,9 @@ export interface BiomeRepository {
 
 export type AdminBiomeError = 'too_few_blocks' | 'too_many_blocks' | 'bad_block_ids' | 'blocks_taken';
 
-// Admin-only biome creation (TZ §6): 5..40 blocks, none already claimed by
-// another biome, typed by the dominant map color of the selected area.
+// Admin-only biome creation (TZ §6): 1..1111 blocks (7..7777 cells), none
+// already claimed by another biome, typed by the dominant map color of the
+// biome's area. Usually invoked in batch by the scatter generator.
 export function createBiomeOnBlocks(
   repo: BiomeRepository,
   blockIds: string[],

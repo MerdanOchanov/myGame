@@ -8,8 +8,14 @@ export const HEX_RESOLUTION = 12;
 // A block is the H3 res-11 parent: exactly 7 res-12 cells (aperture-7
 // honeycomb). Homes claim a whole block; biomes are made of blocks.
 export const BLOCK_RESOLUTION = 11;
-export const MIN_BIOME_BLOCKS = 5;
-export const MAX_BIOME_BLOCKS = 40;
+// Biome size is measured in cells (7..7777) = 1..1111 blocks. The admin
+// selects an area; the client scatters several biomes into it and the
+// function validates each one's block set.
+export const CELLS_PER_BLOCK = 7;
+export const MIN_BIOME_CELLS = 7;
+export const MAX_BIOME_CELLS = 7777;
+export const MIN_BIOME_BLOCKS = Math.ceil(MIN_BIOME_CELLS / CELLS_PER_BLOCK); // 1
+export const MAX_BIOME_BLOCKS = Math.floor(MAX_BIOME_CELLS / CELLS_PER_BLOCK); // 1111
 export const MIN_BIOME_MATERIALS = 1;
 export const MAX_BIOME_MATERIALS = 10;
 export const WORLD_SEED = 'scientists-world-v1';

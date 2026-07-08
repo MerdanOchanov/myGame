@@ -1,37 +1,60 @@
-import { Biome, RGB, clampCollectInterval } from '../core/biome/Biome';
+import { Biome, RGB, BiomeType, clampCollectInterval } from '../core/biome/Biome';
 import { createBiomeOnBlocks, AdminBiomeError } from '../core/biome/BiomeService';
 import { generateMaterialPool } from '../core/materials/MaterialGenerator';
 import { db, biomeRepository, materialRepository } from './db';
 
 const WORLD_SEED = 'scientists-world-v1';
 
-export type AdminError = AdminBiomeError | 'admin_forbidden' | 'unknown_biome';
+export type AdminError = AdminBiomeError | 'admin_forbidden' | 'unknown_biome' | 'no_biomes';
 
-export interface AdminBiomeResult {
-  biome: Biome;
-  materialCount: number;
+export interface AdminBiomeSpec {
+  blockIds: string[];
+  dominantColor: RGB;
+}
+
+export interface AdminBatchResult {
+  biomesCreated: number;
+  blocksCovered: number;
+  materialsTotal: number;
+  typeCounts: Partial<Record<BiomeType, number>>;
 }
 
 // Mock stand-in for the Edge Function's ADMIN_PASSWORD secret: any
 // non-empty password is accepted in local/mock mode.
-export async function adminGenerateBiome(
+//
+// Создаёт пачку биомов, разбросанных клиентом по выбранному участку.
+// Каждый биом — связная группа блоков со своим преобладающим цветом.
+export async function adminGenerateBiomes(
   _playerId: string,
-  payload: { blockIds: string[]; dominantColor: RGB; collectIntervalSec: number; password: string }
-): Promise<AdminBiomeResult | AdminError> {
+  payload: { biomes: AdminBiomeSpec[]; collectIntervalSec: number; password: string }
+): Promise<AdminBatchResult | AdminError> {
   if (!payload.password) return 'admin_forbidden';
+  if (!payload.biomes?.length) return 'no_biomes';
 
-  const result = createBiomeOnBlocks(
-    biomeRepository,
-    payload.blockIds,
-    payload.dominantColor,
-    payload.collectIntervalSec
-  );
-  if (typeof result === 'string') return result;
+  // Блоки не должны пересекаться между биомами в пачке.
+  const seen = new Set<string>();
+  for (const spec of payload.biomes) {
+    for (const blockId of spec.blockIds) {
+      if (seen.has(blockId)) return 'blocks_taken';
+      seen.add(blockId);
+    }
+  }
 
-  const pool = generateMaterialPool(result.id, result.type, WORLD_SEED);
-  for (const material of pool) materialRepository.save(material);
+  const result: AdminBatchResult = { biomesCreated: 0, blocksCovered: 0, materialsTotal: 0, typeCounts: {} };
+  for (const spec of payload.biomes) {
+    const biome = createBiomeOnBlocks(biomeRepository, spec.blockIds, spec.dominantColor, payload.collectIntervalSec);
+    if (typeof biome === 'string') return biome;
 
-  return { biome: db.biomesById.get(result.id)!, materialCount: pool.length };
+    const pool = generateMaterialPool(biome.id, biome.type, WORLD_SEED);
+    for (const material of pool) materialRepository.save(material);
+
+    result.biomesCreated++;
+    result.blocksCovered += biome.blockIds.length;
+    result.materialsTotal += pool.length;
+    result.typeCounts[biome.type] = (result.typeCounts[biome.type] ?? 0) + 1;
+  }
+
+  return result;
 }
 
 export async function adminSetCollectInterval(

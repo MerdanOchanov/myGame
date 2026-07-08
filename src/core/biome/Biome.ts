@@ -20,8 +20,19 @@ export interface Biome {
   collectIntervalSec: number;
 }
 
-export const MIN_BIOME_BLOCKS = 5;
-export const MAX_BIOME_BLOCKS = 40;
+// Один блок = 7 ячеек (H3 res-11 сота). Размер биома задаётся в ячейках
+// (7..7777), что соответствует 1..1111 блокам.
+export const CELLS_PER_BLOCK = 7;
+export const MIN_BIOME_CELLS = 7;
+export const MAX_BIOME_CELLS = 7777;
+export const MIN_BIOME_BLOCKS = Math.ceil(MIN_BIOME_CELLS / CELLS_PER_BLOCK); // 1
+export const MAX_BIOME_BLOCKS = Math.floor(MAX_BIOME_CELLS / CELLS_PER_BLOCK); // 1111
+
+// Админ выделяет прямоугольник любого размера; в нём разбрасывается
+// несколько биомов так, чтобы свободным осталось не более 50% площади.
+export const MIN_AREA_COVERAGE = 0.5;
+export const MAX_BIOMES_PER_BATCH = 300; // предохранитель от чрезмерной генерации
+export const MAX_SELECTION_BLOCKS = 20000; // предохранитель от зависания браузера
 
 export const DEFAULT_COLLECT_INTERVAL_SEC = 10;
 export const MIN_COLLECT_INTERVAL_SEC = 1;

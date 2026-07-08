@@ -345,47 +345,47 @@ async function handleTransferHome(db: SupabaseClient, playerId: string, pm: Proo
   return homeToDto(updated!);
 }
 
-async function handleAdminGenerateBiome(
+interface BiomeSpec {
+  blockIds: string[];
+  dominantColor: RGB;
+}
+
+// Создаёт один биом (блоки + пул материалов). Возвращает id созданного
+// биома для отката, число материалов и тип, либо код ошибки. Уникальный PK
+// на biome_blocks.block_id — гарантия, что блок не попадёт в два биома.
+async function createOneBiome(
   db: SupabaseClient,
   playerId: string,
-  payload: {
-    blockIds: string[]; dominantColor: RGB; collectIntervalSec?: number;
-    password: string; debug?: boolean;
-  }
-) {
-  const expected = Deno.env.get('ADMIN_PASSWORD');
-  if (!expected || payload.password !== expected) return 'admin_forbidden';
-
-  const blockIds = [...new Set(payload.blockIds ?? [])];
+  spec: BiomeSpec,
+  collectIntervalSec: number,
+  debug: boolean
+): Promise<{ biomeId: string; type: string; materialCount: number } | string> {
+  const blockIds = [...new Set(spec.blockIds ?? [])];
   if (blockIds.length < MIN_BIOME_BLOCKS) return 'too_few_blocks';
   if (blockIds.length > MAX_BIOME_BLOCKS) return 'too_many_blocks';
   if (!blockIds.every(isBlockId)) return 'bad_block_ids';
 
-  const { data: taken } = await db.from('biome_blocks').select('block_id').in('block_id', blockIds);
-  if (taken && taken.length > 0) return 'blocks_taken';
-
-  const type = colorToBiomeType(payload.dominantColor);
+  const type = colorToBiomeType(spec.dominantColor);
   const biomeId = `biome_${fnv1aHash(blockIds.slice().sort().join(',')).toString(36)}`;
 
   const centers = blockIds.map(blockCenter);
   const lats = centers.map((c) => c.lat);
   const lngs = centers.map((c) => c.lng);
-  // ~0.001° margin so bbox covers full block hexagons, not just centers
-  const margin = 0.001;
+  const margin = 0.001; // ~0.001° so bbox covers full block hexagons
 
   const { error: biomeError } = await db.from('biomes').insert({
     id: biomeId,
     type,
     block_ids: blockIds,
-    dominant_color: payload.dominantColor,
-    collect_interval_sec: clampCollectInterval(payload.collectIntervalSec),
+    dominant_color: spec.dominantColor,
+    collect_interval_sec: collectIntervalSec,
     min_lat: Math.min(...lats) - margin,
     min_lng: Math.min(...lngs) - margin,
     max_lat: Math.max(...lats) + margin,
     max_lng: Math.max(...lngs) + margin,
     seed: `${biomeId}|admin`,
     created_by: playerId,
-    debug: payload.debug ?? false,
+    debug,
   });
   if (biomeError) return 'biome_exists';
 
@@ -410,8 +410,58 @@ async function handleAdminGenerateBiome(
     secondary_traits: m.secondaryTraits,
   })));
 
-  const { data: biome } = await db.from('biomes').select('*').eq('id', biomeId).single();
-  return { biome: biomeToDto(biome!), materialCount: pool.length };
+  return { biomeId, type, materialCount: pool.length };
+}
+
+async function handleAdminGenerateBiomes(
+  db: SupabaseClient,
+  playerId: string,
+  payload: {
+    biomes: BiomeSpec[]; collectIntervalSec?: number;
+    password: string; debug?: boolean;
+  }
+) {
+  const expected = Deno.env.get('ADMIN_PASSWORD');
+  if (!expected || payload.password !== expected) return 'admin_forbidden';
+
+  const specs = payload.biomes ?? [];
+  if (specs.length === 0) return 'no_biomes';
+
+  // Блоки не должны пересекаться между биомами пачки.
+  const seen = new Set<string>();
+  for (const spec of specs) {
+    for (const blockId of spec.blockIds) {
+      if (seen.has(blockId)) return 'blocks_taken';
+      seen.add(blockId);
+    }
+  }
+
+  const interval = clampCollectInterval(payload.collectIntervalSec);
+  const debug = payload.debug ?? false;
+  const createdIds: string[] = [];
+  const typeCounts: Record<string, number> = {};
+  let blocksCovered = 0;
+  let materialsTotal = 0;
+
+  for (const spec of specs) {
+    const created = await createOneBiome(db, playerId, spec, interval, debug);
+    if (typeof created === 'string') {
+      // откат уже созданных биомов пачки (blocks/materials уходят по каскаду)
+      if (createdIds.length > 0) await db.from('biomes').delete().in('id', createdIds);
+      return created;
+    }
+    createdIds.push(created.biomeId);
+    typeCounts[created.type] = (typeCounts[created.type] ?? 0) + 1;
+    blocksCovered += spec.blockIds.length;
+    materialsTotal += created.materialCount;
+  }
+
+  return {
+    biomesCreated: createdIds.length,
+    blocksCovered,
+    materialsTotal,
+    typeCounts,
+  };
 }
 
 async function handleAdminSetCollectInterval(
@@ -701,11 +751,11 @@ Deno.serve(async (req: Request) => {
         );
         return typeof result === 'string' ? fail(result) : ok(result);
       }
-      case 'adminGenerateBiome': {
-        const result = await handleAdminGenerateBiome(
+      case 'adminGenerateBiomes': {
+        const result = await handleAdminGenerateBiomes(
           db, playerId,
           payload as unknown as {
-            blockIds: string[]; dominantColor: RGB; collectIntervalSec?: number;
+            biomes: BiomeSpec[]; collectIntervalSec?: number;
             password: string; debug?: boolean;
           }
         );

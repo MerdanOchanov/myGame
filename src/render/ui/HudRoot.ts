@@ -2,8 +2,9 @@ import { GameClient } from '../../client/GameClient';
 import { MapView, RectBounds } from '../MapView';
 import { GamePhaserLayer } from '../GamePhaserLayer';
 import { LaboratoryHome } from '../../core/home/LaboratoryHome';
-import { blocksInRectangle } from '../../core/geo/HexGrid';
-import { BIOME_LABELS_RU, MAX_BIOME_BLOCKS } from '../../core/biome/Biome';
+import { blocksInRectangle, blocksBoundingBox } from '../../core/geo/HexGrid';
+import { BIOME_LABELS_RU, BiomeType, MAX_SELECTION_BLOCKS } from '../../core/biome/Biome';
+import { scatterBiomes } from '../../core/biome/BiomeScatter';
 import { ensureStylesInjected } from './styles';
 import { ToastHost } from './Toast';
 import { TopBar } from './TopBar';
@@ -359,9 +360,13 @@ export class HudRoot {
     this.toasts.show('Кликните по карте два раза — углы прямоугольника.', 'info');
     this.mapView.startRectangleSelection((bounds: RectBounds) => {
       let blockIds = blocksInRectangle(bounds);
-      if (blockIds.length > MAX_BIOME_BLOCKS * 3) {
-        // явно чрезмерное выделение — не считаем цвет, сразу показываем счёт
-        blockIds = blockIds.slice(0, MAX_BIOME_BLOCKS * 3);
+      if (blockIds.length > MAX_SELECTION_BLOCKS) {
+        // предохранитель от зависания браузера на гигантском выделении
+        this.toasts.show(
+          `Очень большой участок (${blockIds.length} блоков) — обработаны первые ${MAX_SELECTION_BLOCKS}.`,
+          'info'
+        );
+        blockIds = blockIds.slice(0, MAX_SELECTION_BLOCKS);
       }
       this.adminBlockIds = blockIds;
       this.adminColor = this.mapView.sampleDominantColor(bounds);
@@ -378,20 +383,35 @@ export class HudRoot {
       this.toasts.show('Сначала выделите участок.', 'error');
       return;
     }
+
+    // Разбрасываем биомы по выделению; цвет (тип) каждого семплируем по его
+    // собственному участку карты. Цвет всего выделения — запасной вариант.
+    const fallbackColor = this.adminColor ?? { r: 154, g: 205, b: 90 };
+    const groups = scatterBiomes(this.adminBlockIds);
+    if (groups.length === 0) {
+      this.toasts.show('Не удалось разбить участок на биомы.', 'error');
+      return;
+    }
+
+    const biomes = groups.map((blockIds) => {
+      const bbox = blocksBoundingBox(blockIds);
+      const color = (bbox && this.mapView.sampleDominantColor(bbox)) || fallbackColor;
+      return { blockIds, dominantColor: color };
+    });
+
     try {
-      const result = await this.client.adminGenerateBiome(
-        this.adminBlockIds,
-        this.adminColor ?? { r: 154, g: 205, b: 90 },
-        collectIntervalSec,
-        password
-      );
+      const result = await this.client.adminGenerateBiomes(biomes, collectIntervalSec, password);
       if (typeof result === 'string') {
-        this.toasts.show(`Биом не создан: ${ru(result)}`, 'error');
+        this.toasts.show(`Биомы не созданы: ${ru(result)}`, 'error');
         return;
       }
+      const typesSummary = Object.entries(result.typeCounts)
+        .map(([type, count]) => `${BIOME_LABELS_RU[type as BiomeType] ?? type}×${count}`)
+        .join(', ');
       this.toasts.show(
-        `🌍 Биом «${BIOME_LABELS_RU[result.biome.type]}» создан: ${result.biome.blockIds.length} блоков, ` +
-        `${result.materialCount} видов материалов, сбор раз в ${result.biome.collectIntervalSec} с`,
+        `🌍 Создано биомов: ${result.biomesCreated} (${typesSummary}). ` +
+        `Покрыто ${result.blocksCovered} блоков, ${result.materialsTotal} видов материалов, ` +
+        `сбор раз в ${collectIntervalSec} с`,
         'success'
       );
       this.adminTool.clearSelection();
@@ -400,7 +420,7 @@ export class HudRoot {
       this.adminColor = null;
       await this.refreshSilently();
     } catch (err) {
-      this.toasts.show(`Биом не создан: ${ru(err)}`, 'error');
+      this.toasts.show(`Биомы не созданы: ${ru(err)}`, 'error');
     }
   }
 
