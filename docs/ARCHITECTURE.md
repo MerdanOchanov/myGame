@@ -25,6 +25,10 @@ Backend-стек, БД, geo-index библиотека, авторизация �
 | Backend | **Supabase** (Postgres + Realtime + Auth + Edge Functions) |
 | БД | **PostgreSQL + PostGIS** (через Supabase) |
 | Hex-grid | **H3.js / h3-js**, resolution **12** (ближайшее приближение к диаметру 50 м) |
+| Блоки | Мир делится на блоки по 7 ячеек — родительская ячейка **H3 res 11** (aperture-7 сота); дом занимает целый блок |
+| Биомы | Создаются **админ-функцией** на выделенном участке: 5–40 блоков, тип по преобладающему цвету карты; авто-генерации нет |
+| Материалы | Фиксированный пул **1–10 разных материалов на биом**, сбор — случайный из пула |
+| Админ-доступ | Пароль в секрете Edge Function (`ADMIN_PASSWORD`), проверка на сервере |
 | Авторизация | **Supabase Auth**: email/password + OAuth (Google/Apple) |
 | Real-time transport | **Supabase Realtime** (WebSocket поверх Postgres logical replication) |
 | Debug mode | Добавить режим клика по карте для разработки и тестирования |
@@ -176,16 +180,15 @@ Hex-grid является базовой координатной моделью
 
 ```ts
 interface HexCell {
-  id: string;
-  q: number;
-  r: number;
-  centerLat: number;
-  centerLng: number;
-  diameterMeters: 50;
+  id: string;                      // h3-индекс res 12
+  center: { lat: number; lng: number };
+  blockId?: string;                // h3-индекс res 11 — блок из 7 ячеек
 }
 ```
 
 Принятое решение: использовать `H3.js` (`h3-js`) как готовую geo-index библиотеку, чтобы не писать собственную геометрическую модель мира с нуля. Выбранный resolution — **12** (ближайшее практическое приближение к игровому диаметру 50 м).
+
+Блоки: мир делится на блоки по 7 ячеек — это родительская ячейка `H3` resolution **11** (aperture-7: каждая res-11 ячейка состоит ровно из 7 res-12 ячеек, образуя соту). `blockId = cellToParent(hexCellId, 11)`, ячейки блока = `cellToChildren(blockId, 12)`. Дом занимает целый блок; биомы строятся из блоков (5–40 на биом).
 
 Важно: размер ячейки в `H3` на resolution 12 не равен ровно 50 м. Поверх `H3` может потребоваться дополнительная игровая нормализация, если точность 50 м окажется критичной для баланса.
 
@@ -379,6 +382,7 @@ sequenceDiagram
 | `POST` | `/api/home/claim` | Занять дом-лабораторию |
 | `GET` | `/api/map/layers` | Получить игровые слои карты |
 | `POST` | `/api/materials/collect` | Собрать материал |
+| `POST` | `/api/admin/biomes` | Создать биом на выделенных блоках (админ, по паролю) |
 | `GET` | `/api/inventory` | Получить инвентарь |
 | `POST` | `/api/medicine/craft` | Создать лекарство |
 | `POST` | `/api/lab/test-rat` | Проверить лекарство на крысе |

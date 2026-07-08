@@ -1,4 +1,4 @@
-import { resolveHexCell } from '../core/geo/HexGrid';
+import { resolveHexCell, blockIdOf } from '../core/geo/HexGrid';
 import { GeoProofWithMode, validateGeoProof } from '../core/geo/GeoPosition';
 import { HexCell } from '../core/geo/HexCell';
 import { db } from './db';
@@ -13,7 +13,8 @@ export async function resolveHex(playerId: string, proofWithMode: GeoProofWithMo
   db.lastGeoProofByPlayerId.set(playerId, proofWithMode.proof);
 
   const cell = resolveHexCell(proofWithMode.proof.lat, proofWithMode.proof.lng);
-  const home = db.homesByHexCellId.get(cell.id);
-  const biome = db.biomesByHexCellId.get(cell.id);
-  return { ...cell, ownerPlayerId: home?.playerId, biomeId: biome?.id };
+  const blockId = blockIdOf(cell.id);
+  const home = db.homesByBlockId.get(blockId);
+  const biome = db.biomesByBlockId.get(blockId);
+  return { ...cell, blockId, ownerPlayerId: home?.playerId, biomeId: biome?.id };
 }

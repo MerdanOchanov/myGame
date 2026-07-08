@@ -1,36 +1,88 @@
 import { GameClient } from '../../client/GameClient';
-import { MapView } from '../MapView';
+import { MapView, RectBounds } from '../MapView';
 import { GamePhaserLayer } from '../GamePhaserLayer';
 import { LaboratoryHome } from '../../core/home/LaboratoryHome';
-import { DebugModeToggle } from './DebugModeToggle';
-import { HomeClaimPanel } from './HomeClaimPanel';
-import { BiomePanel } from './BiomePanel';
-import { InventoryPanel } from './InventoryPanel';
-import { CraftingPanel } from './CraftingPanel';
-import { LabPanel } from './LabPanel';
+import { blocksInRectangle } from '../../core/geo/HexGrid';
+import { BIOME_LABELS_RU, MAX_BIOME_BLOCKS } from '../../core/biome/Biome';
+import { ensureStylesInjected } from './styles';
+import { ToastHost } from './Toast';
+import { TopBar } from './TopBar';
+import { ActionBar, ActionId } from './ActionBar';
+import { Drawer } from './Drawer';
+import { HomePanel } from './panels/HomePanel';
+import { InventoryPanel } from './panels/InventoryPanel';
+import { CraftPanel } from './panels/CraftPanel';
+import { LabPanel } from './panels/LabPanel';
+import { AdminTool } from './AdminTool';
 
 const POLL_INTERVAL_MS = 5000;
 
-// Composition root: wires GameClient (state-changing calls) + MapView
-// (Leaflet geography) + GamePhaserLayer (decorative overlay) + the DOM
-// panels into the full MVP loop from TZ.md §16.
+// Русские описания кодов ошибок бекенда.
+const ERROR_RU: Record<string, string> = {
+  accuracy: 'GPS-сигнал слишком неточный',
+  stale_timestamp: 'устаревшие координаты',
+  implausible_speed: 'слишком быстрое перемещение — координаты отклонены',
+  rate_limited: 'слишком часто — подождите пару секунд',
+  no_biome_here: 'здесь нет биома — собирать нечего',
+  block_occupied: 'этот блок уже занят',
+  player_already_has_home: 'у вас уже есть дом',
+  no_existing_home: 'у вас ещё нет дома',
+  transfer_cooldown: 'переносить дом можно не чаще раза в сутки',
+  no_home: 'сначала займите дом',
+  not_in_own_home: 'крафтить можно только в своём доме',
+  unknown_material: 'неизвестный материал',
+  insufficient_materials: 'не хватает материалов',
+  craft_failed: 'крафт не удался — материалы частично потеряны',
+  not_owned: 'у вас нет этого предмета',
+  not_owned_medicine: 'у вас нет этого лекарства',
+  not_owned_rat: 'это не ваша крыса',
+  rat_dead: 'эта крыса погибла',
+  admin_forbidden: 'неверный админ-пароль',
+  too_few_blocks: 'слишком маленький участок (нужно минимум 5 блоков)',
+  too_many_blocks: 'слишком большой участок (максимум 40 блоков)',
+  bad_block_ids: 'некорректное выделение',
+  blocks_taken: 'часть блоков уже занята другим биомом',
+  biome_exists: 'такой биом уже существует',
+  internal_error: 'внутренняя ошибка сервера',
+};
+
+function ru(codeOrError: unknown): string {
+  const code = codeOrError instanceof Error ? codeOrError.message : String(codeOrError);
+  return ERROR_RU[code] ?? code;
+}
+
+// Композиция нового UI: карта + верхняя/нижняя панели + шторка + тосты.
 export class HudRoot {
   private readonly client: GameClient;
   private readonly mapView: MapView;
   private readonly phaserLayer: GamePhaserLayer;
 
-  private readonly debugToggle: DebugModeToggle;
-  private readonly homePanel: HomeClaimPanel;
-  private readonly biomePanel: BiomePanel;
+  private readonly toasts: ToastHost;
+  private readonly topBar: TopBar;
+  private readonly actionBar: ActionBar;
+  private readonly drawer: Drawer;
+  private readonly homePanel: HomePanel;
   private readonly inventoryPanel: InventoryPanel;
-  private readonly craftingPanel: CraftingPanel;
+  private readonly craftPanel: CraftPanel;
   private readonly labPanel: LabPanel;
+  private readonly adminTool: AdminTool;
 
   private currentHome: LaboratoryHome | null = null;
+  private currentBlockId: string | null = null;
+  private currentBiomeLabel: string | null = null;
   private hasCenteredOnce = false;
   private lastCenter: { lat: number; lng: number } | null = null;
+  private adminBlockIds: string[] = [];
+  private adminColor: { r: number; g: number; b: number } | null = null;
 
-  private constructor(uiRootEl: HTMLElement, mapContainerId: string, phaserContainerId: string, client: GameClient, initialHome: LaboratoryHome | undefined) {
+  private constructor(
+    uiRootEl: HTMLElement,
+    mapContainerId: string,
+    phaserContainerId: string,
+    client: GameClient,
+    initialHome: LaboratoryHome | undefined
+  ) {
+    ensureStylesInjected();
     this.client = client;
     this.currentHome = initialHome ?? null;
 
@@ -41,26 +93,42 @@ export class HudRoot {
           void this.refresh();
         }
       },
+      onViewChanged: () => void this.refreshSilently(),
     });
     this.phaserLayer = new GamePhaserLayer(phaserContainerId);
     this.mapView.onMove(() => this.phaserLayer.syncGlowToPosition(this.mapView, this.lastCenter));
 
-    this.debugToggle = new DebugModeToggle(client.getMode(), () => void this.refresh());
-    this.homePanel = new HomeClaimPanel(
+    this.toasts = new ToastHost();
+    this.topBar = new TopBar(client.getMode(), {
+      onToggleMode: () => {
+        const next = this.client.getMode() === 'debug' ? 'production' : 'debug';
+        this.client.setMode(next);
+        this.topBar.setMode(next);
+        this.toasts.show(next === 'debug' ? 'Режим отладки: кликните по карте, чтобы задать позицию' : 'Режим GPS: используется реальная геопозиция');
+        void this.refresh();
+      },
+      onAdminClick: () => this.toggleDrawer('admin'),
+    });
+    this.actionBar = new ActionBar((id) => this.handleAction(id));
+    this.drawer = new Drawer(() => this.closeDrawer());
+
+    this.homePanel = new HomePanel(
       () => void this.handleClaim(),
       () => void this.handleTransfer()
     );
-    this.biomePanel = new BiomePanel();
-    this.inventoryPanel = new InventoryPanel(() => void this.handleCollect());
-    this.craftingPanel = new CraftingPanel((materialIds) => void this.handleCraft(materialIds));
+    this.inventoryPanel = new InventoryPanel();
+    this.craftPanel = new CraftPanel((ids) => void this.handleCraft(ids));
     this.labPanel = new LabPanel(
       (medicineId, ratId) => void this.handleTest(medicineId, ratId),
       (medicineId) => void this.handleApply(medicineId)
     );
+    this.adminTool = new AdminTool({
+      onStartSelection: () => this.startAdminSelection(),
+      onCancelSelection: () => this.mapView.cancelRectangleSelection(),
+      onCreateBiome: (password) => void this.handleCreateBiome(password),
+    });
 
-    for (const panel of [this.debugToggle, this.homePanel, this.biomePanel, this.inventoryPanel, this.craftingPanel, this.labPanel]) {
-      uiRootEl.appendChild(panel.element);
-    }
+    uiRootEl.append(this.toasts.element, this.topBar.element, this.actionBar.element, this.drawer.element);
   }
 
   static async mount(uiRootId: string, mapContainerId: string, phaserContainerId: string): Promise<HudRoot> {
@@ -71,60 +139,116 @@ export class HudRoot {
     const session = await client.init();
 
     const hud = new HudRoot(uiRootEl, mapContainerId, phaserContainerId, client, session.home);
+    hud.topBar.updateState(session.playerState);
     await hud.refreshInventoryAndLab();
-    setInterval(() => void hud.refresh(), POLL_INTERVAL_MS);
+    setInterval(() => void hud.refreshSilently(), POLL_INTERVAL_MS);
     return hud;
   }
 
-  private async refresh(): Promise<void> {
-    let layers: Awaited<ReturnType<GameClient['getMapLayers']>>;
-    try {
-      layers = await this.client.getMapLayers();
-    } catch (err) {
-      this.debugToggle.setStatus(`Position unavailable: ${HudRoot.describeError(err)}`);
+  // ------------------------------------------------------------ навигация
+
+  private handleAction(id: ActionId): void {
+    if (id === 'collect') {
+      void this.handleCollect();
       return;
     }
+    this.toggleDrawer(id);
+  }
+
+  private toggleDrawer(key: string): void {
+    if (this.drawer.openKey === key) {
+      this.closeDrawer();
+      return;
+    }
+    const content =
+      key === 'home' ? this.homePanel.element :
+      key === 'inventory' ? this.inventoryPanel.element :
+      key === 'craft' ? this.craftPanel.element :
+      key === 'lab' ? this.labPanel.element :
+      this.adminTool.element;
+    this.drawer.open(key, content);
+    this.actionBar.setActive(key === 'admin' ? null : (key as ActionId));
+    if (key === 'inventory' || key === 'craft' || key === 'lab') void this.refreshInventoryAndLab();
+    if (key === 'home') this.updateHomePanel();
+  }
+
+  private closeDrawer(): void {
+    this.drawer.close();
+    this.actionBar.setActive(null);
+  }
+
+  // ------------------------------------------------------------- обновление
+
+  private updateHomePanel(): void {
+    this.homePanel.update({
+      currentBlockId: this.currentBlockId,
+      biomeLabel: this.currentBiomeLabel,
+      home: this.currentHome,
+    });
+  }
+
+  private async refresh(): Promise<void> {
+    try {
+      await this.doRefresh();
+    } catch (err) {
+      this.toasts.show(`Позиция недоступна: ${ru(err)}`, 'error');
+    }
+  }
+
+  /** Фоновое обновление (poll, движение карты) — без тостов об отсутствии позиции. */
+  private async refreshSilently(): Promise<void> {
+    try {
+      await this.doRefresh();
+    } catch {
+      // позиция ещё не задана — тихо пропускаем
+    }
+  }
+
+  private async doRefresh(): Promise<void> {
+    const layers = await this.client.getMapLayers(this.mapView.getViewBounds());
     if (typeof layers === 'string') {
-      this.debugToggle.setStatus(`Position unavailable: ${layers}`);
+      this.toasts.show(`Позиция отклонена: ${ru(layers)}`, 'error');
       return;
     }
 
     this.lastCenter = layers.playerHexCell.center;
+    this.currentBlockId = layers.playerHexCell.blockId ?? null;
+    this.currentBiomeLabel = layers.biome ? BIOME_LABELS_RU[layers.biome.type] : null;
+
     this.mapView.showPlayerPosition(layers.playerHexCell.center.lat, layers.playerHexCell.center.lng);
     if (!this.hasCenteredOnce) {
       this.mapView.centerOn(layers.playerHexCell.center.lat, layers.playerHexCell.center.lng);
       this.hasCenteredOnce = true;
     }
-    this.mapView.showHexCluster(layers.biome.hexCellIds, layers.playerHexCell.id);
+    this.mapView.showBiomes(layers.biomes);
+    this.mapView.showCurrentBlock(this.currentBlockId);
     this.mapView.showHomes(layers.nearbyHomes, this.client.currentPlayerId);
     this.phaserLayer.syncGlowToPosition(this.mapView, layers.playerHexCell.center);
 
-    this.biomePanel.update(layers.biome);
-    this.homePanel.update({ currentHexCellId: layers.playerHexCell.id, home: this.currentHome });
+    this.updateHomePanel();
   }
 
   private async refreshInventoryAndLab(): Promise<void> {
     const [inventory, rats] = await Promise.all([this.client.getInventory(), this.client.getRats()]);
     this.inventoryPanel.update(inventory);
-    this.craftingPanel.update(inventory);
+    this.craftPanel.update(inventory);
     this.labPanel.update(rats, inventory);
   }
 
-  private static describeError(err: unknown): string {
-    return err instanceof Error ? err.message : String(err);
-  }
+  // -------------------------------------------------------------- действия
 
   private async handleClaim(): Promise<void> {
     try {
       const result = await this.client.claimHome();
       if (typeof result === 'string') {
-        this.homePanel.update({ currentHexCellId: null, home: this.currentHome, message: `Claim failed: ${result}` });
+        this.toasts.show(`Не удалось занять блок: ${ru(result)}`, 'error');
         return;
       }
       this.currentHome = result;
+      this.toasts.show('🏠 Дом основан! Сота из 7 ячеек теперь ваша.', 'success');
       await this.refresh();
     } catch (err) {
-      this.homePanel.update({ currentHexCellId: null, home: this.currentHome, message: `Claim failed: ${HudRoot.describeError(err)}` });
+      this.toasts.show(`Не удалось занять блок: ${ru(err)}`, 'error');
     }
   }
 
@@ -132,13 +256,14 @@ export class HudRoot {
     try {
       const result = await this.client.transferHome();
       if (typeof result === 'string') {
-        this.homePanel.update({ currentHexCellId: null, home: this.currentHome, message: `Transfer failed: ${result}` });
+        this.toasts.show(`Перенос не удался: ${ru(result)}`, 'error');
         return;
       }
       this.currentHome = result;
+      this.toasts.show('🏠 Дом перенесён.', 'success');
       await this.refresh();
     } catch (err) {
-      this.homePanel.update({ currentHexCellId: null, home: this.currentHome, message: `Transfer failed: ${HudRoot.describeError(err)}` });
+      this.toasts.show(`Перенос не удался: ${ru(err)}`, 'error');
     }
   }
 
@@ -146,13 +271,14 @@ export class HudRoot {
     try {
       const result = await this.client.collectMaterial();
       if (typeof result === 'string') {
-        this.craftingPanel.setMessage(`Collect failed: ${result}`);
+        this.toasts.show(`Сбор не удался: ${ru(result)}`, 'error');
         return;
       }
       if (this.lastCenter) this.phaserLayer.playCollectBurst(this.mapView, this.lastCenter.lat, this.lastCenter.lng);
+      this.toasts.show(`🧺 Собрано: ${result.material.name} ×${result.quantity} (в биоме ${result.poolSize} видов)`, 'success');
       await this.refreshInventoryAndLab();
     } catch (err) {
-      this.craftingPanel.setMessage(`Collect failed: ${HudRoot.describeError(err)}`);
+      this.toasts.show(`Сбор не удался: ${ru(err)}`, 'error');
     }
   }
 
@@ -160,38 +286,93 @@ export class HudRoot {
     try {
       const result = await this.client.craftMedicine(materialIds);
       if (typeof result === 'string') {
-        this.craftingPanel.setMessage(`Craft failed: ${result}`);
+        this.toasts.show(`Крафт не удался: ${ru(result)}`, 'error');
+        await this.refreshInventoryAndLab();
         return;
       }
-      this.craftingPanel.setMessage(`Crafted ${result.name} (success chance was ${Math.round(result.successChance * 100)}%).`);
+      this.toasts.show(`⚗️ Создано: ${result.name} (шанс был ${Math.round(result.successChance * 100)}%)`, 'success');
       await this.refreshInventoryAndLab();
     } catch (err) {
-      this.craftingPanel.setMessage(`Craft failed: ${HudRoot.describeError(err)}`);
+      this.toasts.show(`Крафт не удался: ${ru(err)}`, 'error');
     }
   }
 
   private async handleTest(medicineId: string, ratId: string): Promise<void> {
     const result = await this.client.testMedicineOnRat(medicineId, ratId);
     if (typeof result === 'string') {
-      this.labPanel.setMessage(`Test failed: ${result}`);
+      this.toasts.show(`Тест не удался: ${ru(result)}`, 'error');
       return;
     }
-    this.labPanel.setMessage(
-      result.revealedEffect
-        ? `Revealed effect: ${result.revealedEffect.key} (power ${result.revealedEffect.power}). Rat ${result.ratAlive ? 'survived' : 'died'}.`
-        : 'No new effects left to reveal.'
-    );
+    if (result.revealedEffect) {
+      this.toasts.show(
+        `🧪 Открыт эффект: ${result.revealedEffect.key} (сила ${result.revealedEffect.power}). ` +
+        `Крыса ${result.ratAlive ? 'выжила' : 'погибла 💀'}`,
+        result.ratAlive ? 'success' : 'error'
+      );
+    } else {
+      this.toasts.show('Все эффекты уже раскрыты.', 'info');
+    }
     await this.refreshInventoryAndLab();
   }
 
   private async handleApply(medicineId: string): Promise<void> {
     const result = await this.client.applyMedicine(medicineId);
     if (typeof result === 'string') {
-      this.labPanel.setMessage(`Apply failed: ${result}`);
+      this.toasts.show(`Не удалось применить: ${ru(result)}`, 'error');
       return;
     }
-    const stateSummary = result.playerState.states.map((s) => `${s.key}=${Math.round(s.value)}`).join(', ');
-    this.labPanel.setMessage(`Applied ${result.appliedEffects.length} effects. State: ${stateSummary}`);
+    this.topBar.updateState(result.playerState);
+    this.toasts.show(`💊 Применено эффектов: ${result.appliedEffects.length}`, 'success');
     await this.refreshInventoryAndLab();
+  }
+
+  // ------------------------------------------------------------------ админ
+
+  private startAdminSelection(): void {
+    this.toasts.show('Кликните по карте два раза — углы прямоугольника.', 'info');
+    this.mapView.startRectangleSelection((bounds: RectBounds) => {
+      let blockIds = blocksInRectangle(bounds);
+      if (blockIds.length > MAX_BIOME_BLOCKS * 3) {
+        // явно чрезмерное выделение — не считаем цвет, сразу показываем счёт
+        blockIds = blockIds.slice(0, MAX_BIOME_BLOCKS * 3);
+      }
+      this.adminBlockIds = blockIds;
+      this.adminColor = this.mapView.sampleDominantColor(bounds);
+      this.adminTool.showSelection({ blockIds, dominantColor: this.adminColor });
+    });
+  }
+
+  private async handleCreateBiome(password: string): Promise<void> {
+    if (!password) {
+      this.toasts.show('Введите админ-пароль.', 'error');
+      return;
+    }
+    if (this.adminBlockIds.length === 0) {
+      this.toasts.show('Сначала выделите участок.', 'error');
+      return;
+    }
+    try {
+      const result = await this.client.adminGenerateBiome(
+        this.adminBlockIds,
+        this.adminColor ?? { r: 154, g: 205, b: 90 },
+        password
+      );
+      if (typeof result === 'string') {
+        this.toasts.show(`Биом не создан: ${ru(result)}`, 'error');
+        return;
+      }
+      this.toasts.show(
+        `🌍 Биом «${BIOME_LABELS_RU[result.biome.type]}» создан: ${result.biome.blockIds.length} блоков, ` +
+        `${result.materialCount} видов материалов`,
+        'success'
+      );
+      this.adminTool.clearSelection();
+      this.mapView.clearSelectionRect();
+      this.adminBlockIds = [];
+      this.adminColor = null;
+      await this.refreshSilently();
+    } catch (err) {
+      this.toasts.show(`Биом не создан: ${ru(err)}`, 'error');
+    }
   }
 }

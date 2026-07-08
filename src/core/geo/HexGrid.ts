@@ -1,5 +1,8 @@
-import { latLngToCell, cellToLatLng, cellToBoundary, gridDisk, gridDistance } from 'h3-js';
-import { HexCell, HEX_RESOLUTION, HEX_DIAMETER_METERS } from './HexCell';
+import {
+  latLngToCell, cellToLatLng, cellToBoundary, gridDisk, gridDistance,
+  cellToParent, cellToChildren, getResolution, polygonToCells,
+} from 'h3-js';
+import { HexCell, HEX_RESOLUTION, BLOCK_RESOLUTION } from './HexCell';
 
 export function resolveHexCell(lat: number, lng: number): HexCell {
   const id = latLngToCell(lat, lng, HEX_RESOLUTION);
@@ -7,7 +10,7 @@ export function resolveHexCell(lat: number, lng: number): HexCell {
   return {
     id,
     center: { lat: centerLat, lng: centerLng },
-    diameterMeters: HEX_DIAMETER_METERS,
+    blockId: blockIdOf(id),
   };
 }
 
@@ -16,7 +19,7 @@ export function hexCellById(id: string): HexCell {
   return {
     id,
     center: { lat: centerLat, lng: centerLng },
-    diameterMeters: HEX_DIAMETER_METERS,
+    blockId: blockIdOf(id),
   };
 }
 
@@ -35,4 +38,42 @@ export function gridDiskIncludingSelf(id: string, k: number): string[] {
 
 export function hexDistance(a: string, b: string): number {
   return gridDistance(a, b);
+}
+
+// ------------------------------------------------------------------ blocks
+
+/** The 7-cell block (H3 res-11 parent) a game cell belongs to. */
+export function blockIdOf(cellId: string): string {
+  return cellToParent(cellId, BLOCK_RESOLUTION);
+}
+
+/** The 7 res-12 game cells of a block — the honeycomb. */
+export function blockCells(blockId: string): string[] {
+  return cellToChildren(blockId, HEX_RESOLUTION);
+}
+
+export function blockCenter(blockId: string): { lat: number; lng: number } {
+  const [lat, lng] = cellToLatLng(blockId);
+  return { lat, lng };
+}
+
+export function isBlockId(id: string): boolean {
+  try {
+    return getResolution(id) === BLOCK_RESOLUTION;
+  } catch {
+    return false;
+  }
+}
+
+/** All blocks whose center falls inside the lat/lng rectangle. */
+export function blocksInRectangle(bounds: {
+  minLat: number; minLng: number; maxLat: number; maxLng: number;
+}): string[] {
+  const polygon: [number, number][] = [
+    [bounds.minLat, bounds.minLng],
+    [bounds.minLat, bounds.maxLng],
+    [bounds.maxLat, bounds.maxLng],
+    [bounds.maxLat, bounds.minLng],
+  ];
+  return polygonToCells(polygon, BLOCK_RESOLUTION);
 }

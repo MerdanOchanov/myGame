@@ -100,8 +100,12 @@ export class GameClient {
     return backend.transferHome(this.currentPlayerId, await this.currentProof());
   }
 
-  async getMapLayers() {
-    return backend.getMapLayers(this.currentPlayerId, await this.currentProof());
+  async getMapLayers(viewBounds?: mockBackend.ViewBounds) {
+    return backend.getMapLayers(this.currentPlayerId, await this.currentProof(), viewBounds);
+  }
+
+  async adminGenerateBiome(blockIds: string[], dominantColor: { r: number; g: number; b: number }, password: string) {
+    return backend.adminGenerateBiome(this.currentPlayerId, { blockIds, dominantColor, password });
   }
 
   async collectMaterial() {

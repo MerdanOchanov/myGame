@@ -6,11 +6,26 @@
 
 ## 1. Применить SQL-схему
 
-Supabase Dashboard → SQL Editor → New query → вставить содержимое
-`supabase/migrations/0001_init.sql` целиком → Run.
+Supabase Dashboard → SQL Editor → New query → выполнить по порядку:
 
-Создаёт все таблицы, PostGIS, RPC `nearby_homes`, RLS-политики
-(клиенты read-only; пишет только Edge Function через service role).
+1. `supabase/migrations/0001_init.sql` (если ещё не применяли);
+2. `supabase/migrations/0002_blocks_and_admin_biomes.sql` — блоки по 7 ячеек
+   и админ-биомы. **Стирает** старые дома/биомы/материалы/инвентари
+   (аккаунты и крысы остаются).
+
+Клиенты read-only; пишет только Edge Function через service role.
+
+## 1a. Задать админ-пароль
+
+Генерация биомов защищена секретом функции:
+
+```bash
+npx supabase secrets set ADMIN_PASSWORD="ваш-пароль" --project-ref fendgykbgztoscurruoy
+```
+
+(нужен тот же personal access token, что и для деплоя функции; или
+Dashboard → Edge Functions → Secrets). Этот же пароль вводится в игре
+в панели 🛠️.
 
 ## 2. Включить анонимный вход
 

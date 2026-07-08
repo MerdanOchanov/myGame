@@ -1,5 +1,6 @@
 import { craftMedicine as craftMedicineService, CraftError } from '../core/medicine/MedicineCraftingService';
 import { isPlayerInOwnHome } from '../core/home/LaboratoryHome';
+import { blockIdOf } from '../core/geo/HexGrid';
 import { applyEffectToState } from '../core/player/PlayerState';
 import { Material } from '../core/materials/Material';
 import { GeoProofWithMode } from '../core/geo/GeoPosition';
@@ -21,7 +22,7 @@ export async function craftMedicine(
 
   const home = db.homesByPlayerId.get(playerId);
   if (!home) return 'no_home';
-  if (!isPlayerInOwnHome(home, cell.id)) return 'not_in_own_home';
+  if (!isPlayerInOwnHome(home, blockIdOf(cell.id))) return 'not_in_own_home';
 
   const materials: Material[] = [];
   for (const id of materialIds) {

@@ -1,13 +1,16 @@
 import { BiomeType, BIOME_MATERIAL_WEIGHTS, MaterialCategory } from '../biome/Biome';
-import { createSeededRandom, intInRange } from '../shared/Random';
+import { createSeededRandom, intInRange, fnv1aHash } from '../shared/Random';
 import { MATERIAL_TRAIT_CATALOG } from './MaterialTraitCatalog';
 import { Material, MaterialTrait } from './Material';
 
+export const MIN_BIOME_MATERIALS = 1;
+export const MAX_BIOME_MATERIALS = 10;
+
 const NAME_PREFIXES: Record<MaterialCategory, string[]> = {
-  plant: ['Sagebrush', 'Bitterroot', 'Dune Grass', 'Silverleaf'],
-  fruit: ['Sunfruit', 'Amberberry Pod', 'Wild Fig', 'Honeydrop'],
-  berry: ['Redberry', 'Frostberry', 'Cloudberry', 'Thornberry'],
-  insect: ['Sand Beetle', 'Glass Wing', 'Rock Ant', 'Mist Moth'],
+  plant: ['Полынь', 'Горькокорень', 'Дюнная трава', 'Сребролист', 'Водоросль', 'Мох-камнеед'],
+  fruit: ['Солнцеплод', 'Дикий инжир', 'Медовик', 'Янтарный стручок'],
+  berry: ['Красника', 'Морозника', 'Облачная ягода', 'Терновая ягода'],
+  insect: ['Песчаный жук', 'Стеклокрыл', 'Каменный муравей', 'Туманная моль', 'Бетонный сверчок'],
 };
 
 function pickWeightedCategory(rand: () => number, biomeType: BiomeType): MaterialCategory {
@@ -33,31 +36,37 @@ function generateTraits(rand: () => number, count: number, visibility: MaterialT
   return traits;
 }
 
-// Generates a fixed Material for a given hex cell + biome (TZ §7: generated
-// once, then fixed forever — the caller is responsible for persisting it via
-// MaterialDiscoveryService so it's never regenerated).
-export function generateMaterial(
-  originHexCellId: string,
+// Fixed pool of 1..10 distinct materials generated once with the biome
+// (TZ §7); collecting rolls a random pool member. Mirrors the Edge
+// Function's gameRules.generateMaterialPool — keep in sync.
+export function generateMaterialPool(
+  biomeId: string,
   biomeType: BiomeType,
   worldSeed: string,
   now: Date = new Date()
-): Material {
-  const generationSeed = `${originHexCellId}|${worldSeed}`;
-  const rand = createSeededRandom(generationSeed);
+): Material[] {
+  const poolRand = createSeededRandom(biomeId, worldSeed);
+  const poolSize = intInRange(poolRand, MIN_BIOME_MATERIALS, MAX_BIOME_MATERIALS);
 
-  const category = pickWeightedCategory(rand, biomeType);
-  const namePrefix = NAME_PREFIXES[category][Math.floor(rand() * NAME_PREFIXES[category].length)];
-  const name = `${namePrefix} #${originHexCellId.slice(-4)}`;
+  const materials: Material[] = [];
+  for (let poolIndex = 0; poolIndex < poolSize; poolIndex++) {
+    const generationSeed = `${biomeId}|${poolIndex}|${worldSeed}`;
+    const rand = createSeededRandom(generationSeed);
+    const category = pickWeightedCategory(rand, biomeType);
+    const namePrefix = NAME_PREFIXES[category][Math.floor(rand() * NAME_PREFIXES[category].length)];
 
-  return {
-    id: `material_${originHexCellId}`,
-    name,
-    category,
-    biomeType,
-    originHexCellId,
-    generationSeed,
-    primaryTraits: generateTraits(rand, intInRange(rand, 2, 3), 'hidden'),
-    secondaryTraits: generateTraits(rand, intInRange(rand, 1, 2), 'hidden'),
-    discoveredAt: now.toISOString(),
-  };
+    materials.push({
+      id: `material_${fnv1aHash(generationSeed).toString(36)}`,
+      name: `${namePrefix} №${poolIndex + 1}`,
+      category,
+      biomeType,
+      biomeId,
+      poolIndex,
+      generationSeed,
+      primaryTraits: generateTraits(rand, intInRange(rand, 2, 3), 'hidden'),
+      secondaryTraits: generateTraits(rand, intInRange(rand, 1, 2), 'hidden'),
+      createdAt: now.toISOString(),
+    });
+  }
+  return materials;
 }

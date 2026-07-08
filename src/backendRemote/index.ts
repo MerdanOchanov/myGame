@@ -9,13 +9,15 @@ import { LaboratoryHome } from '../core/home/LaboratoryHome';
 import { Medicine } from '../core/medicine/Medicine';
 import { LabRat } from '../core/lab/LabRat';
 import {
-  PlayerSession, MapLayers, MaterialCollectionResult, InventoryView, ApplyMedicineResult, RatTestResult,
+  PlayerSession, MapLayers, MaterialCollectionResult, InventoryView, ApplyMedicineResult, RatTestResult, ViewBounds,
 } from '../backend/types';
 import type { GeoError } from '../backend/geo';
 import type { CollectError } from '../backend/materials';
 import type { MedicineCraftError, ApplyMedicineError } from '../backend/medicine';
 import type { LabTestError } from '../backend/lab';
+import type { AdminError, AdminBiomeResult } from '../backend/admin';
 import type { HomeClaimError } from '../core/home/HomeClaimService';
+import type { RGB } from '../core/biome/Biome';
 
 const url = import.meta.env.VITE_SUPABASE_URL;
 const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -85,8 +87,22 @@ export async function transferHome(
   return invoke<LaboratoryHome>('transferHome', proofWithMode) as Promise<LaboratoryHome | HomeClaimError | GeoError>;
 }
 
-export async function getMapLayers(_playerId: string, proofWithMode: GeoProofWithMode): Promise<MapLayers | GeoError> {
-  return invoke<MapLayers>('mapLayers', proofWithMode) as Promise<MapLayers | GeoError>;
+export async function getMapLayers(
+  _playerId: string,
+  proofWithMode: GeoProofWithMode,
+  viewBounds?: ViewBounds
+): Promise<MapLayers | GeoError> {
+  return invoke<MapLayers>('mapLayers', { proofWithMode, viewBounds }) as Promise<MapLayers | GeoError>;
+}
+
+export async function adminGenerateBiome(
+  _playerId: string,
+  payload: { blockIds: string[]; dominantColor: RGB; password: string }
+): Promise<AdminBiomeResult | AdminError> {
+  return invoke<AdminBiomeResult>('adminGenerateBiome', {
+    ...payload,
+    debug: false,
+  }) as Promise<AdminBiomeResult | AdminError>;
 }
 
 export async function collectMaterial(

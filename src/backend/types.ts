@@ -26,15 +26,26 @@ export interface PlayerSession {
   home?: LaboratoryHome;
 }
 
+export interface ViewBounds {
+  minLat: number;
+  minLng: number;
+  maxLat: number;
+  maxLng: number;
+}
+
 export interface MapLayers {
   playerHexCell: HexCell;
-  biome: Biome;
+  /** Biome at the player's current block, if any. */
+  biome?: Biome;
+  /** All biomes intersecting the requested viewport. */
+  biomes: Biome[];
   nearbyHomes: LaboratoryHome[];
 }
 
 export interface MaterialCollectionResult {
   material: MaterialSummary;
   quantity: number;
+  poolSize: number;
 }
 
 export interface InventoryView {

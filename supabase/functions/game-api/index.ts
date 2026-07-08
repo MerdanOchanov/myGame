@@ -6,12 +6,14 @@
 // Response body: { ok: true, data } | { ok: false, error: string }
 import { createClient, SupabaseClient } from 'npm:@supabase/supabase-js@2';
 import {
-  GeoProof, ActiveEffect,
-  resolveHexCellId, hexCellCenter, validateProductionProof,
-  generateBiome, generateMaterial, craftMedicineRecipe,
-  createInitialStates, applyEffectToStates, isRatDead,
+  GeoProof, ActiveEffect, RGB,
+  resolveHexCellId, hexCellCenter, blockIdOf, blockCenter, isBlockId,
+  validateProductionProof, colorToBiomeType, generateMaterialPool,
+  craftMedicineRecipe, createInitialStates, applyEffectToStates, isRatDead,
+  fnv1aHash,
   MIN_CRAFT_MATERIALS, HOME_TRANSFER_COOLDOWN_MS, FREE_RAT_DRIP_INTERVAL_MS,
   COLLECT_COOLDOWN_MS, NEARBY_HOME_RADIUS_METERS,
+  MIN_BIOME_BLOCKS, MAX_BIOME_BLOCKS,
 } from '../_shared/gameRules.ts';
 
 type Mode = 'production' | 'debug';
@@ -84,50 +86,36 @@ async function resolveHexFor(
   return { hexCellId, center: hexCellCenter(hexCellId) };
 }
 
-async function getOrGenerateBiome(db: SupabaseClient, hexCellId: string) {
-  const { data: cell } = await db.from('biome_cells').select('biome_id').eq('hex_cell_id', hexCellId).maybeSingle();
-  if (cell) {
-    const { data: biome } = await db.from('biomes').select('*').eq('id', cell.biome_id).single();
-    return biome!;
-  }
-
-  const generated = generateBiome(hexCellId);
-  // Concurrent generation of the same biome is resolved by ignoring
-  // conflicts and re-reading — first write wins, matching "fixed forever".
-  await db.from('biomes').upsert(
-    { id: generated.id, type: generated.type, hex_cell_ids: generated.hexCellIds, seed: generated.seed },
-    { onConflict: 'id', ignoreDuplicates: true }
-  );
-  await db.from('biome_cells').upsert(
-    generated.hexCellIds.map((id) => ({ hex_cell_id: id, biome_id: generated.id })),
-    { onConflict: 'hex_cell_id', ignoreDuplicates: true }
-  );
-
-  const { data: biome } = await db.from('biomes').select('*').eq('id', generated.id).single();
-  return biome!;
+async function biomeAtBlock(db: SupabaseClient, blockId: string) {
+  const { data: link } = await db.from('biome_blocks').select('biome_id').eq('block_id', blockId).maybeSingle();
+  if (!link) return null;
+  const { data: biome } = await db.from('biomes').select('*').eq('id', link.biome_id).single();
+  return biome;
 }
 
-function biomeToDto(biome: { id: string; type: string; hex_cell_ids: string[]; generated_at: string; seed: string }) {
+function biomeToDto(biome: {
+  id: string; type: string; block_ids: string[]; dominant_color: RGB; created_at: string; seed: string;
+}) {
   return {
     id: biome.id,
     type: biome.type,
-    hexCellIds: biome.hex_cell_ids,
-    generatedAt: biome.generated_at,
+    blockIds: biome.block_ids,
+    dominantColor: biome.dominant_color,
+    createdAt: biome.created_at,
     seed: biome.seed,
   };
 }
 
 function homeToDto(home: {
-  id: string; player_id: string; hex_cell_id: string; lat: number; lng: number;
+  id: string; player_id: string; block_id: string; lat: number; lng: number;
   claimed_at: string; level: number;
 }) {
   return {
     id: home.id,
     playerId: home.player_id,
-    hexCellId: home.hex_cell_id,
+    blockId: home.block_id,
     position: { lat: home.lat, lng: home.lng },
     claimedAt: home.claimed_at,
-    diameterMeters: 50 as const,
     level: home.level,
   };
 }
@@ -166,9 +154,8 @@ function ratToDto(r: {
 }
 
 function materialToDto(m: {
-  id: string; name: string; category: string; biome_type: string; origin_hex_cell_id: string;
-  generation_seed: string; primary_traits: unknown; secondary_traits: unknown;
-  discovered_at: string; discovered_by: string | null;
+  id: string; name: string; category: string; biome_type: string; biome_id: string; pool_index: number;
+  generation_seed: string; primary_traits: unknown; secondary_traits: unknown; created_at: string;
 }, revealedKeys: Set<string>) {
   const withVisibility = (traits: { effectKey: string; percent: number }[]) =>
     traits.map((t) => ({ ...t, visibility: revealedKeys.has(t.effectKey) ? 'known' : 'hidden' }));
@@ -177,12 +164,12 @@ function materialToDto(m: {
     name: m.name,
     category: m.category,
     biomeType: m.biome_type,
-    originHexCellId: m.origin_hex_cell_id,
+    biomeId: m.biome_id,
+    poolIndex: m.pool_index,
     generationSeed: m.generation_seed,
     primaryTraits: withVisibility(m.primary_traits as { effectKey: string; percent: number }[]),
     secondaryTraits: withVisibility(m.secondary_traits as { effectKey: string; percent: number }[]),
-    discoveredAt: m.discovered_at,
-    discoveredByPlayerId: m.discovered_by ?? undefined,
+    createdAt: m.created_at,
   };
 }
 
@@ -240,39 +227,65 @@ async function handleResolveHex(db: SupabaseClient, playerId: string, pm: ProofW
   const resolved = await resolveHexFor(db, playerId, pm);
   if (typeof resolved === 'string') return resolved;
 
-  const [{ data: home }, { data: cell }] = await Promise.all([
-    db.from('homes').select('player_id').eq('hex_cell_id', resolved.hexCellId).maybeSingle(),
-    db.from('biome_cells').select('biome_id').eq('hex_cell_id', resolved.hexCellId).maybeSingle(),
+  const blockId = blockIdOf(resolved.hexCellId);
+  const [{ data: home }, biome] = await Promise.all([
+    db.from('homes').select('player_id').eq('block_id', blockId).maybeSingle(),
+    biomeAtBlock(db, blockId),
   ]);
 
   return {
     id: resolved.hexCellId,
     center: resolved.center,
-    diameterMeters: 50 as const,
+    blockId,
     ownerPlayerId: home?.player_id ?? undefined,
-    biomeId: cell?.biome_id ?? undefined,
+    biomeId: biome?.id ?? undefined,
   };
 }
 
-async function handleMapLayers(db: SupabaseClient, playerId: string, pm: ProofWithMode) {
+interface ViewBounds {
+  minLat: number;
+  minLng: number;
+  maxLat: number;
+  maxLng: number;
+}
+
+async function handleMapLayers(
+  db: SupabaseClient,
+  playerId: string,
+  payload: { proofWithMode: ProofWithMode; viewBounds?: ViewBounds }
+) {
+  const pm = payload.proofWithMode;
   const resolved = await resolveHexFor(db, playerId, pm);
   if (typeof resolved === 'string') return resolved;
 
-  const biome = await getOrGenerateBiome(db, resolved.hexCellId);
-  const { data: nearby } = await db.rpc('nearby_homes', {
-    p_lat: resolved.center.lat,
-    p_lng: resolved.center.lng,
-    p_radius_m: NEARBY_HOME_RADIUS_METERS,
-  });
+  const blockId = blockIdOf(resolved.hexCellId);
+  const biome = await biomeAtBlock(db, blockId);
+
+  let biomesQuery = db.from('biomes').select('*');
+  const vb = payload.viewBounds;
+  if (vb) {
+    biomesQuery = biomesQuery
+      .lte('min_lat', vb.maxLat).gte('max_lat', vb.minLat)
+      .lte('min_lng', vb.maxLng).gte('max_lng', vb.minLng);
+  }
+  const [{ data: biomes }, { data: nearby }] = await Promise.all([
+    biomesQuery.limit(100),
+    db.rpc('nearby_homes', {
+      p_lat: resolved.center.lat,
+      p_lng: resolved.center.lng,
+      p_radius_m: NEARBY_HOME_RADIUS_METERS,
+    }),
+  ]);
 
   return {
     playerHexCell: {
       id: resolved.hexCellId,
       center: resolved.center,
-      diameterMeters: 50 as const,
-      biomeId: biome.id,
+      blockId,
+      biomeId: biome?.id ?? undefined,
     },
-    biome: biomeToDto(biome),
+    biome: biome ? biomeToDto(biome) : undefined,
+    biomes: (biomes ?? []).map(biomeToDto),
     nearbyHomes: (nearby ?? []).map(homeToDto),
   };
 }
@@ -281,18 +294,19 @@ async function handleClaimHome(db: SupabaseClient, playerId: string, pm: ProofWi
   const resolved = await resolveHexFor(db, playerId, pm);
   if (typeof resolved === 'string') return resolved;
 
+  const blockId = blockIdOf(resolved.hexCellId);
+  const center = blockCenter(blockId);
   const { data: inserted, error } = await db.from('homes').insert({
     player_id: playerId,
-    hex_cell_id: resolved.hexCellId,
-    lat: resolved.center.lat,
-    lng: resolved.center.lng,
+    block_id: blockId,
+    lat: center.lat,
+    lng: center.lng,
     debug: pm.mode === 'debug',
   }).select('*').single();
 
   if (error) {
-    if (error.message.includes('homes_hex_cell_id_key')) return 'hex_occupied';
     if (error.message.includes('homes_player_id_key')) return 'player_already_has_home';
-    return 'hex_occupied';
+    return 'block_occupied';
   }
   return homeToDto(inserted!);
 }
@@ -306,19 +320,83 @@ async function handleTransferHome(db: SupabaseClient, playerId: string, pm: Proo
 
   if (Date.now() - new Date(current.claimed_at).getTime() < HOME_TRANSFER_COOLDOWN_MS) return 'transfer_cooldown';
 
+  const blockId = blockIdOf(resolved.hexCellId);
+  const center = blockCenter(blockId);
   const { data: updated, error } = await db.from('homes').update({
-    hex_cell_id: resolved.hexCellId,
-    lat: resolved.center.lat,
-    lng: resolved.center.lng,
+    block_id: blockId,
+    lat: center.lat,
+    lng: center.lng,
     claimed_at: new Date().toISOString(),
     debug: pm.mode === 'debug',
   }).eq('player_id', playerId).select('*').single();
 
-  if (error) {
-    if (error.message.includes('homes_hex_cell_id_key')) return 'hex_occupied';
-    return 'hex_occupied';
-  }
+  if (error) return 'block_occupied';
   return homeToDto(updated!);
+}
+
+async function handleAdminGenerateBiome(
+  db: SupabaseClient,
+  playerId: string,
+  payload: { blockIds: string[]; dominantColor: RGB; password: string; debug?: boolean }
+) {
+  const expected = Deno.env.get('ADMIN_PASSWORD');
+  if (!expected || payload.password !== expected) return 'admin_forbidden';
+
+  const blockIds = [...new Set(payload.blockIds ?? [])];
+  if (blockIds.length < MIN_BIOME_BLOCKS) return 'too_few_blocks';
+  if (blockIds.length > MAX_BIOME_BLOCKS) return 'too_many_blocks';
+  if (!blockIds.every(isBlockId)) return 'bad_block_ids';
+
+  const { data: taken } = await db.from('biome_blocks').select('block_id').in('block_id', blockIds);
+  if (taken && taken.length > 0) return 'blocks_taken';
+
+  const type = colorToBiomeType(payload.dominantColor);
+  const biomeId = `biome_${fnv1aHash(blockIds.slice().sort().join(',')).toString(36)}`;
+
+  const centers = blockIds.map(blockCenter);
+  const lats = centers.map((c) => c.lat);
+  const lngs = centers.map((c) => c.lng);
+  // ~0.001° margin so bbox covers full block hexagons, not just centers
+  const margin = 0.001;
+
+  const { error: biomeError } = await db.from('biomes').insert({
+    id: biomeId,
+    type,
+    block_ids: blockIds,
+    dominant_color: payload.dominantColor,
+    min_lat: Math.min(...lats) - margin,
+    min_lng: Math.min(...lngs) - margin,
+    max_lat: Math.max(...lats) + margin,
+    max_lng: Math.max(...lngs) + margin,
+    seed: `${biomeId}|admin`,
+    created_by: playerId,
+    debug: payload.debug ?? false,
+  });
+  if (biomeError) return 'biome_exists';
+
+  const { error: blocksError } = await db.from('biome_blocks').insert(
+    blockIds.map((block_id) => ({ block_id, biome_id: biomeId }))
+  );
+  if (blocksError) {
+    await db.from('biomes').delete().eq('id', biomeId);
+    return 'blocks_taken';
+  }
+
+  const pool = generateMaterialPool(biomeId, type);
+  await db.from('materials').insert(pool.map((m) => ({
+    id: m.id,
+    biome_id: biomeId,
+    pool_index: m.poolIndex,
+    name: m.name,
+    category: m.category,
+    biome_type: m.biomeType,
+    generation_seed: m.generationSeed,
+    primary_traits: m.primaryTraits,
+    secondary_traits: m.secondaryTraits,
+  })));
+
+  const { data: biome } = await db.from('biomes').select('*').eq('id', biomeId).single();
+  return { biome: biomeToDto(biome!), materialCount: pool.length };
 }
 
 async function handleCollectMaterial(db: SupabaseClient, playerId: string, pm: ProofWithMode) {
@@ -332,37 +410,29 @@ async function handleCollectMaterial(db: SupabaseClient, playerId: string, pm: P
   const resolved = await resolveHexFor(db, playerId, pm);
   if (typeof resolved === 'string') return resolved;
 
-  const biome = await getOrGenerateBiome(db, resolved.hexCellId);
+  const blockId = blockIdOf(resolved.hexCellId);
+  const biome = await biomeAtBlock(db, blockId);
+  if (!biome) return 'no_biome_here';
 
-  // Fixation: first insert wins forever; conflicts fall through to the read.
-  const generated = generateMaterial(resolved.hexCellId, biome.type);
-  await db.from('materials').upsert({
-    id: generated.id,
-    origin_hex_cell_id: generated.originHexCellId,
-    name: generated.name,
-    category: generated.category,
-    biome_type: generated.biomeType,
-    generation_seed: generated.generationSeed,
-    primary_traits: generated.primaryTraits,
-    secondary_traits: generated.secondaryTraits,
-    discovered_by: playerId,
-  }, { onConflict: 'origin_hex_cell_id', ignoreDuplicates: true });
+  const { data: pool } = await db.from('materials').select('*').eq('biome_id', biome.id);
+  if (!pool || pool.length === 0) return 'no_biome_here';
 
-  const { data: material } = await db.from('materials').select('*').eq('origin_hex_cell_id', resolved.hexCellId).single();
+  const material = pool[Math.floor(Math.random() * pool.length)];
 
   await db.from('players').update({ last_collect_at: new Date().toISOString() }).eq('id', playerId);
 
   const { data: stack } = await db.from('inventories')
-    .select('quantity').eq('player_id', playerId).eq('item_id', material!.id).maybeSingle();
+    .select('quantity').eq('player_id', playerId).eq('item_id', material.id).maybeSingle();
   const quantity = (stack?.quantity ?? 0) + 1;
   await db.from('inventories').upsert(
-    { player_id: playerId, item_id: material!.id, item_type: 'material', quantity },
+    { player_id: playerId, item_id: material.id, item_type: 'material', quantity },
     { onConflict: 'player_id,item_id' }
   );
 
   return {
-    material: { id: material!.id, name: material!.name, category: material!.category },
+    material: { id: material.id, name: material.name, category: material.category },
     quantity,
+    poolSize: pool.length,
   };
 }
 
@@ -591,7 +661,16 @@ Deno.serve(async (req: Request) => {
         return typeof result === 'string' ? fail(result) : ok(result);
       }
       case 'mapLayers': {
-        const result = await handleMapLayers(db, playerId, payload as unknown as ProofWithMode);
+        const result = await handleMapLayers(
+          db, playerId, payload as unknown as { proofWithMode: ProofWithMode; viewBounds?: ViewBounds }
+        );
+        return typeof result === 'string' ? fail(result) : ok(result);
+      }
+      case 'adminGenerateBiome': {
+        const result = await handleAdminGenerateBiome(
+          db, playerId,
+          payload as unknown as { blockIds: string[]; dominantColor: RGB; password: string; debug?: boolean }
+        );
         return typeof result === 'string' ? fail(result) : ok(result);
       }
       case 'claimHome': {

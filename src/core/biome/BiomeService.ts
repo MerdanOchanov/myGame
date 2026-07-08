@@ -1,22 +1,35 @@
-import { Biome } from './Biome';
-import { generateBiome } from './BiomeGenerator';
+import { Biome, RGB, MIN_BIOME_BLOCKS, MAX_BIOME_BLOCKS } from './Biome';
+import { createAdminBiome } from './BiomeGenerator';
+import { isBlockId } from '../geo/HexGrid';
 
 // Backend-agnostic repository shape (ARCHITECTURE §6).
 export interface BiomeRepository {
-  getByHexCellId(hexCellId: string): Biome | undefined;
-  /** Must index the returned biome under every id in biome.hexCellIds. */
+  getByBlockId(blockId: string): Biome | undefined;
+  /** Must index the returned biome under every id in biome.blockIds. */
   save(biome: Biome): void;
 }
 
-const WORLD_SEED = 'scientists-world-v1';
+export type AdminBiomeError = 'too_few_blocks' | 'too_many_blocks' | 'bad_block_ids' | 'blocks_taken';
 
-// Hex cells aren't pre-hydrated for the whole world (ARCHITECTURE §8.5) —
-// biomes are generated lazily on first lookup and then fixed via the repo.
-export function getOrGenerateBiome(repo: BiomeRepository, hexCellId: string): Biome {
-  const existing = repo.getByHexCellId(hexCellId);
-  if (existing) return existing;
+// Admin-only biome creation (TZ §6): 5..40 blocks, none already claimed by
+// another biome, typed by the dominant map color of the selected area.
+export function createBiomeOnBlocks(
+  repo: BiomeRepository,
+  blockIds: string[],
+  dominantColor: RGB,
+  now: Date = new Date()
+): Biome | AdminBiomeError {
+  const unique = [...new Set(blockIds)];
+  if (unique.length < MIN_BIOME_BLOCKS) return 'too_few_blocks';
+  if (unique.length > MAX_BIOME_BLOCKS) return 'too_many_blocks';
+  if (!unique.every(isBlockId)) return 'bad_block_ids';
+  if (unique.some((blockId) => repo.getByBlockId(blockId))) return 'blocks_taken';
 
-  const biome = generateBiome(hexCellId, WORLD_SEED);
+  const biome = createAdminBiome(unique, dominantColor, now);
   repo.save(biome);
   return biome;
+}
+
+export function biomeAtBlock(repo: BiomeRepository, blockId: string): Biome | undefined {
+  return repo.getByBlockId(blockId);
 }

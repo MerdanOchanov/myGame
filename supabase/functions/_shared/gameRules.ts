@@ -2,9 +2,16 @@
 // Edge Function (Deno). Kept as a controlled copy because Deno needs npm:
 // specifiers and the Vite client can't share them; if you change a rule
 // here, mirror it in src/core (and vice versa).
-import { latLngToCell, cellToLatLng, gridDisk } from 'npm:h3-js@4.5.0';
+import { latLngToCell, cellToLatLng, cellToParent, cellToChildren, getResolution } from 'npm:h3-js@4.5.0';
 
 export const HEX_RESOLUTION = 12;
+// A block is the H3 res-11 parent: exactly 7 res-12 cells (aperture-7
+// honeycomb). Homes claim a whole block; biomes are made of blocks.
+export const BLOCK_RESOLUTION = 11;
+export const MIN_BIOME_BLOCKS = 5;
+export const MAX_BIOME_BLOCKS = 40;
+export const MIN_BIOME_MATERIALS = 1;
+export const MAX_BIOME_MATERIALS = 10;
 export const WORLD_SEED = 'scientists-world-v1';
 export const RULES_VERSION = 'v1';
 export const MIN_CRAFT_MATERIALS = 3;
@@ -80,6 +87,27 @@ export function hexCellCenter(id: string): { lat: number; lng: number } {
   return { lat, lng };
 }
 
+export function blockIdOf(cellId: string): string {
+  return cellToParent(cellId, BLOCK_RESOLUTION);
+}
+
+export function blockCells(blockId: string): string[] {
+  return cellToChildren(blockId, HEX_RESOLUTION);
+}
+
+export function blockCenter(blockId: string): { lat: number; lng: number } {
+  const [lat, lng] = cellToLatLng(blockId);
+  return { lat, lng };
+}
+
+export function isBlockId(id: string): boolean {
+  try {
+    return getResolution(id) === BLOCK_RESOLUTION;
+  } catch {
+    return false;
+  }
+}
+
 const EARTH_RADIUS_METERS = 6371e3;
 
 export function haversineDistanceMeters(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
@@ -117,43 +145,51 @@ export function validateProductionProof(
 }
 
 // ----------------------------------------------------------------- biomes
-export type BiomeType = 'desert' | 'steppe' | 'oasis' | 'mountain' | 'urban_fringe' | 'coast';
-export const BIOME_TYPES: readonly BiomeType[] = ['desert', 'steppe', 'oasis', 'mountain', 'urban_fringe', 'coast'];
+export type BiomeType = 'water' | 'desert' | 'steppe' | 'forest' | 'urban_jungle' | 'mountain';
 
 export type MaterialCategory = 'plant' | 'fruit' | 'berry' | 'insect';
 
 export const BIOME_MATERIAL_WEIGHTS: Record<BiomeType, Partial<Record<MaterialCategory, number>>> = {
+  water: { plant: 3, berry: 1 },
   desert: { plant: 2, insect: 2 },
   steppe: { plant: 3, berry: 2, insect: 1 },
-  oasis: { fruit: 3, berry: 2, plant: 1 },
+  forest: { plant: 2, berry: 2, fruit: 1, insect: 1 },
+  urban_jungle: { plant: 1, insect: 3 },
   mountain: { plant: 2, insect: 1 },
-  urban_fringe: { plant: 1, insect: 2 },
-  coast: { plant: 2, berry: 1 },
 };
 
-export interface GeneratedBiome {
-  id: string;
-  type: BiomeType;
-  hexCellIds: string[];
-  seed: string;
+export interface RGB {
+  r: number;
+  g: number;
+  b: number;
 }
 
-export function generateBiome(hexCellId: string, worldSeed: string = WORLD_SEED): GeneratedBiome {
-  const rand = createSeededRandom(hexCellId, worldSeed);
-  const type = BIOME_TYPES[Math.floor(rand() * BIOME_TYPES.length)];
-  const clusterSize = intInRange(rand, 3, 6);
+// Canonical classification of the dominant map color sampled by the admin
+// client over the selected area. Blue -> water, beige -> desert,
+// built-up gray -> "concrete jungle", greens by darkness, near-white ->
+// mountain/snow; anything else falls back to steppe.
+export function colorToBiomeType({ r, g, b }: RGB): BiomeType {
+  const rn = r / 255, gn = g / 255, bn = b / 255;
+  const max = Math.max(rn, gn, bn);
+  const min = Math.min(rn, gn, bn);
+  const lightness = (max + min) / 2;
+  const delta = max - min;
+  const saturation = delta === 0 ? 0 : delta / (1 - Math.abs(2 * lightness - 1));
 
-  const ring = gridDisk(hexCellId, 1).filter((c: string) => c !== hexCellId);
-  for (let i = ring.length - 1; i > 0; i--) {
-    const j = Math.floor(rand() * (i + 1));
-    [ring[i], ring[j]] = [ring[j], ring[i]];
+  let hue = 0;
+  if (delta > 0) {
+    if (max === rn) hue = 60 * (((gn - bn) / delta) % 6);
+    else if (max === gn) hue = 60 * ((bn - rn) / delta + 2);
+    else hue = 60 * ((rn - gn) / delta + 4);
   }
-  return {
-    id: `biome_${hexCellId}`,
-    type,
-    hexCellIds: [hexCellId, ...ring.slice(0, clusterSize - 1)],
-    seed: worldSeed,
-  };
+  if (hue < 0) hue += 360;
+
+  if (lightness > 0.96) return 'mountain';
+  if (saturation >= 0.12 && hue >= 180 && hue <= 260) return 'water';
+  if (saturation >= 0.12 && hue >= 65 && hue < 180) return lightness < 0.45 ? 'forest' : 'steppe';
+  if (hue >= 30 && hue < 65 && lightness >= 0.55) return 'desert';
+  if (saturation < 0.12) return 'urban_jungle';
+  return 'steppe';
 }
 
 // -------------------------------------------------------------- materials
@@ -163,10 +199,10 @@ export const MATERIAL_TRAIT_CATALOG = [
 ] as const;
 
 const NAME_PREFIXES: Record<MaterialCategory, string[]> = {
-  plant: ['Sagebrush', 'Bitterroot', 'Dune Grass', 'Silverleaf'],
-  fruit: ['Sunfruit', 'Amberberry Pod', 'Wild Fig', 'Honeydrop'],
-  berry: ['Redberry', 'Frostberry', 'Cloudberry', 'Thornberry'],
-  insect: ['Sand Beetle', 'Glass Wing', 'Rock Ant', 'Mist Moth'],
+  plant: ['Полынь', 'Горькокорень', 'Дюнная трава', 'Сребролист', 'Водоросль', 'Мох-камнеед'],
+  fruit: ['Солнцеплод', 'Дикий инжир', 'Медовик', 'Янтарный стручок'],
+  berry: ['Красника', 'Морозника', 'Облачная ягода', 'Терновая ягода'],
+  insect: ['Песчаный жук', 'Стеклокрыл', 'Каменный муравей', 'Туманная моль', 'Бетонный сверчок'],
 };
 
 export interface GeneratedMaterial {
@@ -174,7 +210,7 @@ export interface GeneratedMaterial {
   name: string;
   category: MaterialCategory;
   biomeType: BiomeType;
-  originHexCellId: string;
+  poolIndex: number;
   generationSeed: string;
   primaryTraits: MaterialTrait[];
   secondaryTraits: MaterialTrait[];
@@ -202,23 +238,32 @@ function generateTraits(rand: () => number, count: number): MaterialTrait[] {
   return traits;
 }
 
-export function generateMaterial(originHexCellId: string, biomeType: BiomeType): GeneratedMaterial {
-  const generationSeed = `${originHexCellId}|${WORLD_SEED}`;
-  const rand = createSeededRandom(generationSeed);
+// Fixed pool of 1..10 distinct materials generated once with the biome;
+// collecting rolls a random member of the pool.
+export function generateMaterialPool(biomeId: string, biomeType: BiomeType): GeneratedMaterial[] {
+  const poolSeed = `${biomeId}|${WORLD_SEED}`;
+  const poolRand = createSeededRandom(poolSeed);
+  const poolSize = intInRange(poolRand, MIN_BIOME_MATERIALS, MAX_BIOME_MATERIALS);
 
-  const category = pickWeightedCategory(rand, biomeType);
-  const prefix = NAME_PREFIXES[category][Math.floor(rand() * NAME_PREFIXES[category].length)];
+  const materials: GeneratedMaterial[] = [];
+  for (let poolIndex = 0; poolIndex < poolSize; poolIndex++) {
+    const generationSeed = `${biomeId}|${poolIndex}|${WORLD_SEED}`;
+    const rand = createSeededRandom(generationSeed);
+    const category = pickWeightedCategory(rand, biomeType);
+    const prefix = NAME_PREFIXES[category][Math.floor(rand() * NAME_PREFIXES[category].length)];
 
-  return {
-    id: `material_${originHexCellId}`,
-    name: `${prefix} #${originHexCellId.slice(-4)}`,
-    category,
-    biomeType,
-    originHexCellId,
-    generationSeed,
-    primaryTraits: generateTraits(rand, intInRange(rand, 2, 3)),
-    secondaryTraits: generateTraits(rand, intInRange(rand, 1, 2)),
-  };
+    materials.push({
+      id: `material_${fnv1aHash(generationSeed).toString(36)}`,
+      name: `${prefix} №${poolIndex + 1}`,
+      category,
+      biomeType,
+      poolIndex,
+      generationSeed,
+      primaryTraits: generateTraits(rand, intInRange(rand, 2, 3)),
+      secondaryTraits: generateTraits(rand, intInRange(rand, 1, 2)),
+    });
+  }
+  return materials;
 }
 
 // --------------------------------------------------------------- medicine

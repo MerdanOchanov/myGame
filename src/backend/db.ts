@@ -24,11 +24,12 @@ class GameDatabase {
   readonly lastCollectAtByPlayerId = new Map<string, number>();
 
   readonly homesByPlayerId = new Map<string, LaboratoryHome>();
-  readonly homesByHexCellId = new Map<string, LaboratoryHome>();
+  readonly homesByBlockId = new Map<string, LaboratoryHome>();
 
-  readonly biomesByHexCellId = new Map<string, Biome>();
+  readonly biomesById = new Map<string, Biome>();
+  readonly biomesByBlockId = new Map<string, Biome>();
 
-  readonly materialsByHexCellId = new Map<string, Material>();
+  readonly materialPoolsByBiomeId = new Map<string, Material[]>();
   readonly materialsById = new Map<string, Material>();
   readonly knowledgeProfiles = new Map<string, Set<string>>(); // `${playerId}|${materialId}` -> revealed effectKeys
 
@@ -95,31 +96,34 @@ export function getKnowledgeKey(playerId: string, materialId: string): string {
 }
 
 export const homeRepository: HomeRepository = {
-  getByHexCellId: (hexCellId) => db.homesByHexCellId.get(hexCellId),
+  getByBlockId: (blockId) => db.homesByBlockId.get(blockId),
   getByPlayerId: (playerId) => db.homesByPlayerId.get(playerId),
   save: (home) => {
     db.homesByPlayerId.set(home.playerId, home);
-    db.homesByHexCellId.set(home.hexCellId, home);
+    db.homesByBlockId.set(home.blockId, home);
   },
-  remove: (hexCellId) => {
-    const home = db.homesByHexCellId.get(hexCellId);
+  remove: (blockId) => {
+    const home = db.homesByBlockId.get(blockId);
     if (!home) return;
-    db.homesByHexCellId.delete(hexCellId);
+    db.homesByBlockId.delete(blockId);
     db.homesByPlayerId.delete(home.playerId);
   },
 };
 
 export const biomeRepository: BiomeRepository = {
-  getByHexCellId: (hexCellId) => db.biomesByHexCellId.get(hexCellId),
+  getByBlockId: (blockId) => db.biomesByBlockId.get(blockId),
   save: (biome) => {
-    for (const hexCellId of biome.hexCellIds) db.biomesByHexCellId.set(hexCellId, biome);
+    db.biomesById.set(biome.id, biome);
+    for (const blockId of biome.blockIds) db.biomesByBlockId.set(blockId, biome);
   },
 };
 
 export const materialRepository: MaterialRepository = {
-  getByHexCellId: (hexCellId) => db.materialsByHexCellId.get(hexCellId),
+  getPoolByBiomeId: (biomeId) => db.materialPoolsByBiomeId.get(biomeId) ?? [],
   save: (material) => {
-    db.materialsByHexCellId.set(material.originHexCellId, material);
+    const pool = db.materialPoolsByBiomeId.get(material.biomeId) ?? [];
+    pool.push(material);
+    db.materialPoolsByBiomeId.set(material.biomeId, pool);
     db.materialsById.set(material.id, material);
   },
 };
