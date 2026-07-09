@@ -102,6 +102,10 @@ export class HudRoot {
     this.phaserLayer = new GamePhaserLayer(phaserContainerId);
     this.mapView.onMove(() => this.phaserLayer.syncGlowToPosition(this.mapView, this.lastCenter));
 
+    // Если карта восстановлена из сохранённого вида (после перезагрузки) —
+    // не перепрыгиваем на игрока, оставляем прежние позицию и зум.
+    this.hasCenteredOnce = this.mapView.hasSavedView();
+
     this.toasts = new ToastHost();
     this.topBar = new TopBar(client.getMode(), {
       onToggleMode: () => {
@@ -414,6 +418,11 @@ export class HudRoot {
         `сбор раз в ${collectIntervalSec} с`,
         'success'
       );
+      // Подгоняем карту под созданные биомы, чтобы они сразу были видны.
+      const createdBlocks = biomes.flatMap((b) => b.blockIds);
+      const bbox = blocksBoundingBox(createdBlocks);
+      if (bbox) this.mapView.fitBounds(bbox);
+
       this.adminTool.clearSelection();
       this.mapView.clearSelectionRect();
       this.adminBlockIds = [];

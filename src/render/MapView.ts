@@ -15,6 +15,26 @@ export interface RectBounds {
   maxLng: number;
 }
 
+const VIEW_STORAGE_KEY = 'scientists-world:mapView';
+
+interface SavedView {
+  lat: number;
+  lng: number;
+  zoom: number;
+}
+
+function loadSavedView(): SavedView | null {
+  try {
+    const raw = localStorage.getItem(VIEW_STORAGE_KEY);
+    if (!raw) return null;
+    const v = JSON.parse(raw);
+    if (typeof v.lat === 'number' && typeof v.lng === 'number' && typeof v.zoom === 'number') return v;
+  } catch {
+    // повреждённое значение — игнорируем
+  }
+  return null;
+}
+
 // Leaflet владеет всей географией: тайлы, биомы (заливка блоков цветом
 // типа), дома-соты из 7 ячеек, маркер игрока, рамка админ-выделения.
 export class MapView {
@@ -30,9 +50,24 @@ export class MapView {
   private selectionRect: L.Rectangle | null = null;
   private onSelectionComplete: ((bounds: RectBounds) => void) | null = null;
 
+  private readonly restoredView: boolean;
+
   constructor(containerId: string, callbacks: MapViewCallbacks = {}) {
-    this.map = L.map(containerId, { worldCopyJump: true, zoomControl: false }).setView([20, 0], 3);
+    const saved = loadSavedView();
+    this.restoredView = saved !== null;
+    this.map = L.map(containerId, { worldCopyJump: true, zoomControl: false })
+      .setView(saved ? [saved.lat, saved.lng] : [20, 0], saved ? saved.zoom : 3);
     L.control.zoom({ position: 'bottomright' }).addTo(this.map);
+
+    // Запоминаем позицию/зум карты, чтобы восстановить их после перезагрузки.
+    this.map.on('moveend zoomend', () => {
+      const c = this.map.getCenter();
+      try {
+        localStorage.setItem(VIEW_STORAGE_KEY, JSON.stringify({ lat: c.lat, lng: c.lng, zoom: this.map.getZoom() }));
+      } catch {
+        // localStorage недоступен — не критично
+      }
+    });
 
     // crossOrigin нужен, чтобы канвас с тайлами не был "tainted" и админ мог
     // семплировать преобладающий цвет выделенного участка.
@@ -58,6 +93,19 @@ export class MapView {
 
   centerOn(lat: number, lng: number, zoom = 17): void {
     this.map.setView([lat, lng], zoom);
+  }
+
+  /** true, если карта восстановлена из сохранённого вида (после перезагрузки). */
+  hasSavedView(): boolean {
+    return this.restoredView;
+  }
+
+  /** Подогнать карту под прямоугольник (например, только что созданные биомы). */
+  fitBounds(rect: RectBounds): void {
+    this.map.fitBounds(
+      L.latLngBounds([rect.minLat, rect.minLng], [rect.maxLat, rect.maxLng]),
+      { maxZoom: 17, padding: [40, 40] }
+    );
   }
 
   getViewBounds(): RectBounds {
