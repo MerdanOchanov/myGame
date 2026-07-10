@@ -90,6 +90,23 @@ export async function adminSetRatTestInterval(
   return { ratTestIntervalSec: db.ratTestIntervalSec };
 }
 
+export async function adminClearBiomes(
+  _playerId: string,
+  payload: { password: string }
+): Promise<{ deletedBiomes: number } | AdminError> {
+  if (!ok(payload.password)) return 'admin_forbidden';
+  const count = db.biomesById.size;
+  db.biomesById.clear();
+  db.biomesByBlockId.clear();
+  db.materialPoolsByBiomeId.clear();
+  db.materialsById.clear();
+  // Материалы удалены — убираем их стеки из инвентарей (лекарства остаются).
+  for (const inv of db.inventories.values()) {
+    inv.materials = inv.materials.filter((s) => db.materialsById.has(s.itemId));
+  }
+  return { deletedBiomes: count };
+}
+
 // ------------------------------------------------------------------- events
 export async function adminCreateEvent(
   playerId: string,

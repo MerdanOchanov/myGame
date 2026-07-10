@@ -19,6 +19,7 @@ export interface AdminToolCallbacks {
   onCancelSelection: () => void;
   onCreateBiome: (password: string, collectIntervalSec: number) => void;
   onSetCollectInterval: (password: string, biomeId: string, collectIntervalSec: number) => void;
+  onClearBiomes: (password: string) => void;
   onSetRatTestInterval: (password: string, intervalSec: number) => void;
   onStartEventPlacement: () => void;
   onCreateEvent: (password: string, radiusKm: number, severity: number) => void;
@@ -115,9 +116,19 @@ export class AdminTool {
     this.previewEl.textContent =
       'Выделите прямоугольник двумя кликами по карте (размер не ограничен). ' +
       `В нём разбросается несколько биомов (${MIN_BIOME_CELLS}–${MAX_BIOME_CELLS} ячеек каждый), ` +
-      `покрывая не менее ${Math.round(MIN_AREA_COVERAGE * 100)}% площади. Тип каждого биома — по ` +
+      `покрывая около ${Math.round(MIN_AREA_COVERAGE * 100)}% площади. Тип каждого биома — по ` +
       'преобладающему цвету карты в его месте: вода → водный, пески → пустыня, застройка → каменные джунгли.';
     this.element.appendChild(this.previewEl);
+
+    const clearBtn = document.createElement('button');
+    clearBtn.className = 'sw-btn-secondary';
+    clearBtn.textContent = '🗑️ Удалить все биомы';
+    clearBtn.addEventListener('click', () => {
+      if (confirm('Удалить ВСЕ биомы и их материалы? Это действие необратимо.')) {
+        this.callbacks.onClearBiomes(this.passwordInput.value);
+      }
+    });
+    this.element.appendChild(clearBtn);
 
     // ---- управление текущим биомом (интервал сбора) ----
     this.currentBiomeEl = document.createElement('div');

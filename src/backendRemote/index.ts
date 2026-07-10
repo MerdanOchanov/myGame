@@ -121,6 +121,13 @@ export async function adminSetRatTestInterval(
   return invoke<{ ratTestIntervalSec: number }>('adminSetRatTestInterval', payload) as Promise<{ ratTestIntervalSec: number } | AdminError>;
 }
 
+export async function adminClearBiomes(
+  _playerId: string,
+  payload: { password: string }
+): Promise<{ deletedBiomes: number } | AdminError> {
+  return invoke<{ deletedBiomes: number }>('adminClearBiomes', payload) as Promise<{ deletedBiomes: number } | AdminError>;
+}
+
 export async function adminCreateEvent(
   _playerId: string,
   payload: { lat: number; lng: number; radiusKm: number; severity: number; password: string }

@@ -120,6 +120,10 @@ export class GameClient {
     return backend.adminSetRatTestInterval(this.currentPlayerId, { intervalSec, password });
   }
 
+  async adminClearBiomes(password: string) {
+    return backend.adminClearBiomes(this.currentPlayerId, { password });
+  }
+
   async adminCreateEvent(lat: number, lng: number, radiusKm: number, severity: number, password: string) {
     return backend.adminCreateEvent(this.currentPlayerId, { lat, lng, radiusKm, severity, password });
   }

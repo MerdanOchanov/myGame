@@ -8,7 +8,7 @@ export { claimHome, transferHome, getMapLayers } from './home';
 export { collectMaterial, getInventory } from './materials';
 export type { CollectError } from './materials';
 export {
-  adminGenerateBiomes, adminSetCollectInterval, adminSetRatTestInterval,
+  adminGenerateBiomes, adminSetCollectInterval, adminSetRatTestInterval, adminClearBiomes,
   adminCreateEvent, adminDeleteEvent, adminListPlayers, adminListMedicines, adminListMaterials,
 } from './admin';
 export type { AdminError, AdminBiomeSpec, AdminBatchResult } from './admin';

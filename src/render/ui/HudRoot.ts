@@ -146,6 +146,7 @@ export class HudRoot {
       onCreateBiome: (password, intervalSec) => void this.handleCreateBiome(password, intervalSec),
       onSetCollectInterval: (password, biomeId, intervalSec) =>
         void this.handleSetCollectInterval(password, biomeId, intervalSec),
+      onClearBiomes: (password) => void this.handleClearBiomes(password),
       onSetRatTestInterval: (password, intervalSec) => void this.handleSetRatTestInterval(password, intervalSec),
       onStartEventPlacement: () => this.startEventPlacement(),
       onCreateEvent: (password, radiusKm, severity) => void this.handleCreateEvent(password, radiusKm, severity),
@@ -513,6 +514,24 @@ export class HudRoot {
       await this.refreshSilently();
     } catch (err) {
       this.toasts.show(`Интервал не обновлён: ${ru(err)}`, 'error');
+    }
+  }
+
+  private async handleClearBiomes(password: string): Promise<void> {
+    if (!password) {
+      this.toasts.show('Введите админ-пароль.', 'error');
+      return;
+    }
+    try {
+      const result = await this.client.adminClearBiomes(password);
+      if (typeof result === 'string') {
+        this.toasts.show(`Не удалось очистить: ${ru(result)}`, 'error');
+        return;
+      }
+      this.toasts.show(`🗑️ Удалено биомов: ${result.deletedBiomes}`, 'success');
+      await this.refreshSilently();
+    } catch (err) {
+      this.toasts.show(`Не удалось очистить: ${ru(err)}`, 'error');
     }
   }
 

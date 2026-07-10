@@ -391,6 +391,14 @@ async function handleAdminSetRatTestInterval(db: SupabaseClient, payload: { inte
   return { ratTestIntervalSec: value };
 }
 
+async function handleAdminClearBiomes(db: SupabaseClient, payload: { password: string }) {
+  if (!(await requireAdmin(payload.password))) return 'admin_forbidden';
+  const { count } = await db.from('biomes').select('id', { count: 'exact', head: true });
+  // Удаление биомов каскадом убирает biome_blocks, materials и knowledge_profiles.
+  await db.from('biomes').delete().neq('id', '');
+  return { deletedBiomes: count ?? 0 };
+}
+
 async function handleAdminCreateEvent(
   db: SupabaseClient,
   playerId: string,
@@ -1032,6 +1040,10 @@ Deno.serve(async (req: Request) => {
       }
       case 'adminSetRatTestInterval': {
         const result = await handleAdminSetRatTestInterval(db, payload as unknown as { intervalSec: number; password: string });
+        return typeof result === 'string' ? fail(result) : ok(result);
+      }
+      case 'adminClearBiomes': {
+        const result = await handleAdminClearBiomes(db, payload as unknown as { password: string });
         return typeof result === 'string' ? fail(result) : ok(result);
       }
       case 'adminCreateEvent': {
