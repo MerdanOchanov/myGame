@@ -27,10 +27,14 @@ export function scatterBiomes(
   const total = available.size;
   if (total === 0) return [];
 
-  // Случайная целевая заполненность в диапазоне [minCoverage .. 1].
+  // Заполняем примерно minCoverage (по умолчанию ~50%) участка, оставляя
+  // остальное свободным. Биомы должны быть РАЗБРОСАНЫ с промежутками, а не
+  // покрывать участок сплошь; поэтому берём фиксированную долю около 50%
+  // (лёгкая вариация ±5%), а не диапазон вплоть до 100%.
+  const fillRatio = Math.min(0.95, minCoverage + (rng() - 0.5) * 0.1);
   const targetCovered = Math.max(
     minBlocks,
-    Math.min(total, Math.ceil((minCoverage + rng() * (1 - minCoverage)) * total))
+    Math.min(total, Math.round(fillRatio * total))
   );
 
   const biomes: string[][] = [];
