@@ -7,9 +7,12 @@ export type { GeoError } from './geo';
 export { claimHome, transferHome, getMapLayers } from './home';
 export { collectMaterial, getInventory } from './materials';
 export type { CollectError } from './materials';
-export { adminGenerateBiomes, adminSetCollectInterval } from './admin';
+export {
+  adminGenerateBiomes, adminSetCollectInterval, adminSetRatTestInterval,
+  adminCreateEvent, adminDeleteEvent, adminListPlayers, adminListMedicines, adminListMaterials,
+} from './admin';
 export type { AdminError, AdminBiomeSpec, AdminBatchResult } from './admin';
 export { craftMedicine, applyMedicine } from './medicine';
 export type { MedicineCraftError, ApplyMedicineError } from './medicine';
-export { getRats, testMedicineOnRat } from './lab';
-export type { LabTestError } from './lab';
+export { getRats, testMedicineOnRat, renameRat } from './lab';
+export type { LabTestError, RenameRatError } from './lab';

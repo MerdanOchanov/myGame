@@ -6,14 +6,17 @@
 // Response body: { ok: true, data } | { ok: false, error: string }
 import { createClient, SupabaseClient } from 'npm:@supabase/supabase-js@2';
 import {
-  GeoProof, ActiveEffect, RGB,
+  GeoProof, ActiveEffect, BiologicalState, RGB,
   resolveHexCellId, hexCellCenter, blockIdOf, blockCenter, isBlockId,
   validateProductionProof, colorToBiomeType, generateMaterialPool,
   craftMedicineRecipe, createInitialStates, applyEffectToStates, isRatDead,
   fnv1aHash,
-  MIN_CRAFT_MATERIALS, HOME_TRANSFER_COOLDOWN_MS, FREE_RAT_DRIP_INTERVAL_MS,
+  MIN_CRAFT_MATERIALS, HOME_TRANSFER_COOLDOWN_MS,
   NEARBY_HOME_RADIUS_METERS,
   MIN_BIOME_BLOCKS, MAX_BIOME_BLOCKS, clampCollectInterval,
+  DEFAULT_RAT_TEST_INTERVAL_SEC, MEDICINE_CONSUME_CHANCE, MIN_RATS,
+  MAX_RAT_NAME_LENGTH, MAX_MEDICINE_NAME_LENGTH,
+  clampEventRadiusKm, clampEventSeverity, eventCenterAt, eventHexagon, eventProximity, eventEffects,
 } from '../_shared/gameRules.ts';
 
 type Mode = 'production' | 'debug';
@@ -142,12 +145,13 @@ function medicineToDto(m: {
 }
 
 function ratToDto(r: {
-  id: string; owner_player_id: string; state: unknown; active_effects: unknown;
+  id: string; owner_player_id: string; name: string | null; state: unknown; active_effects: unknown;
   alive: boolean; created_at: string;
 }) {
   return {
     id: r.id,
     ownerPlayerId: r.owner_player_id,
+    name: r.name ?? 'Крыса',
     state: r.state,
     activeEffects: r.active_effects,
     alive: r.alive,
@@ -196,12 +200,8 @@ async function handleSession(db: SupabaseClient, playerId: string) {
 
   const { count: ratCount } = await db.from('rats')
     .select('id', { count: 'exact', head: true }).eq('owner_player_id', playerId);
-  if (!ratCount) {
-    await db.from('rats').insert({
-      id: `rat_${playerId}_${Date.now()}`,
-      owner_player_id: playerId,
-      state: createInitialStates(),
-    });
+  if ((ratCount ?? 0) < MIN_RATS) {
+    await topUpRats(db, playerId, ratCount ?? 0);
     await db.from('players').update({ last_free_rat_at: new Date().toISOString() }).eq('id', playerId);
   }
 
@@ -270,14 +270,15 @@ async function handleMapLayers(
       .lte('min_lat', vb.maxLat).gte('max_lat', vb.minLat)
       .lte('min_lng', vb.maxLng).gte('max_lng', vb.minLng);
   }
-  const [{ data: biomes }, { data: nearby }, { data: player }] = await Promise.all([
+  const [{ data: biomes }, { data: nearby }, { data: player }, { data: allEvents }] = await Promise.all([
     biomesQuery.limit(100),
     db.rpc('nearby_homes', {
       p_lat: resolved.center.lat,
       p_lng: resolved.center.lng,
       p_radius_m: NEARBY_HOME_RADIUS_METERS,
     }),
-    db.from('players').select('last_collect_at').eq('id', playerId).single(),
+    db.from('players').select('last_collect_at, last_event_tick_at').eq('id', playerId).single(),
+    db.from('events').select('*'),
   ]);
 
   // Активный таймер сбора: последний сбор + интервал текущего биома.
@@ -286,6 +287,8 @@ async function handleMapLayers(
     const next = new Date(player.last_collect_at).getTime() + biome.collect_interval_sec * 1000;
     if (next > Date.now()) nextCollectAt = new Date(next).toISOString();
   }
+
+  const eventLayer = await computeEventLayer(db, playerId, resolved.center, vb, player?.last_event_tick_at ?? null, allEvents ?? []);
 
   return {
     playerHexCell: {
@@ -298,7 +301,168 @@ async function handleMapLayers(
     biomes: (biomes ?? []).map(biomeToDto),
     nearbyHomes: (nearby ?? []).map(homeToDto),
     nextCollectAt,
+    ...eventLayer,
   };
+}
+
+interface EventRow {
+  id: string; base_lat: number; base_lng: number; radius_km: number; seed: string;
+  severity: number; created_at: string;
+}
+
+function eventRowToDto(row: EventRow) {
+  return {
+    id: row.id,
+    basePosition: { lat: row.base_lat, lng: row.base_lng },
+    radiusKm: row.radius_km,
+    seed: row.seed,
+    severity: row.severity,
+    createdAt: row.created_at,
+  };
+}
+
+const EVENT_DAMAGE_DIVISOR = 10;
+const EVENT_MAX_TICK_SEC = 60;
+
+// Слои событий: видимые события (с текущей позицией), близость и постепенный
+// урон, если игрок внутри. Урон применяется на этом же серверном пути.
+async function computeEventLayer(
+  db: SupabaseClient,
+  playerId: string,
+  playerPos: { lat: number; lng: number },
+  vb: ViewBounds | undefined,
+  lastEventTickAt: string | null,
+  rows: EventRow[]
+) {
+  const now = new Date();
+  const events: { event: ReturnType<typeof eventRowToDto>; center: { lat: number; lng: number }; hexagon: [number, number][] }[] = [];
+  let insideEventId: string | undefined;
+  let approachingEventId: string | undefined;
+  let insideRow: EventRow | undefined;
+
+  for (const row of rows) {
+    const center = eventCenterAt({ lat: row.base_lat, lng: row.base_lng }, row.seed, now);
+    const inView = !vb || (center.lat >= vb.minLat && center.lat <= vb.maxLat && center.lng >= vb.minLng && center.lng <= vb.maxLng);
+    const proximity = eventProximity(playerPos, center, row.radius_km);
+    if (inView || proximity !== 'far') {
+      events.push({ event: eventRowToDto(row), center, hexagon: eventHexagon(center, row.radius_km) });
+    }
+    if (proximity === 'inside') { insideEventId = row.id; insideRow = row; }
+    else if (proximity === 'approaching' && !approachingEventId) approachingEventId = row.id;
+  }
+
+  let playerState: { playerId: string; states: BiologicalState[]; activeEffects: ActiveEffect[] } | undefined;
+
+  if (insideRow) {
+    const nowMs = now.getTime();
+    if (lastEventTickAt) {
+      const elapsedSec = Math.min(EVENT_MAX_TICK_SEC, (nowMs - new Date(lastEventTickAt).getTime()) / 1000);
+      if (elapsedSec > 0) {
+        const { data: ps } = await db.from('player_states').select('*').eq('player_id', playerId).single();
+        if (ps) {
+          let states: BiologicalState[] = ps.states;
+          const scale = elapsedSec / EVENT_DAMAGE_DIVISOR;
+          for (const effect of eventEffects(insideRow.severity)) {
+            states = applyEffectToStates(states, { ...effect, power: effect.power * scale });
+          }
+          await db.from('player_states').update({ states }).eq('player_id', playerId);
+          playerState = { playerId, states, activeEffects: ps.active_effects };
+        }
+      }
+    }
+    await db.from('players').update({ last_event_tick_at: now.toISOString() }).eq('id', playerId);
+  } else if (lastEventTickAt) {
+    await db.from('players').update({ last_event_tick_at: null }).eq('id', playerId);
+  }
+
+  return { events, insideEventId, approachingEventId, playerState };
+}
+
+// -------------------------------------------------------- admin: events/lists
+async function requireAdmin(password: string): Promise<boolean> {
+  const expected = Deno.env.get('ADMIN_PASSWORD');
+  return Boolean(expected && password === expected);
+}
+
+async function handleAdminSetRatTestInterval(db: SupabaseClient, payload: { intervalSec: number; password: string }) {
+  if (!(await requireAdmin(payload.password))) return 'admin_forbidden';
+  const value = Math.max(1, Math.min(3600, Math.floor(Number(payload.intervalSec) || DEFAULT_RAT_TEST_INTERVAL_SEC)));
+  await db.from('game_settings').upsert({ key: 'rat_test_interval_sec', value }, { onConflict: 'key' });
+  return { ratTestIntervalSec: value };
+}
+
+async function handleAdminCreateEvent(
+  db: SupabaseClient,
+  playerId: string,
+  payload: { lat: number; lng: number; radiusKm: number; severity: number; password: string; debug?: boolean }
+) {
+  if (!(await requireAdmin(payload.password))) return 'admin_forbidden';
+  const now = new Date();
+  const seed = `event_${fnv1aHash(`${payload.lat},${payload.lng},${now.getTime()}`).toString(36)}`;
+  const { data, error } = await db.from('events').insert({
+    id: seed,
+    base_lat: payload.lat,
+    base_lng: payload.lng,
+    radius_km: clampEventRadiusKm(payload.radiusKm),
+    seed,
+    severity: clampEventSeverity(payload.severity),
+    created_by: playerId,
+    debug: payload.debug ?? false,
+  }).select('*').single();
+  if (error || !data) return 'event_failed';
+  return eventRowToDto(data);
+}
+
+async function handleAdminDeleteEvent(db: SupabaseClient, payload: { eventId: string; password: string }) {
+  if (!(await requireAdmin(payload.password))) return 'admin_forbidden';
+  const { data } = await db.from('events').delete().eq('id', payload.eventId).select('id').maybeSingle();
+  if (!data) return 'unknown_event';
+  return { deleted: payload.eventId };
+}
+
+async function handleAdminListPlayers(db: SupabaseClient, payload: { password: string }) {
+  if (!(await requireAdmin(payload.password))) return 'admin_forbidden';
+  const now = Date.now();
+  const [{ data: players }, { data: runs }, { data: states }, { data: homes }] = await Promise.all([
+    db.from('players').select('id'),
+    db.from('survival_runs').select('player_id, started_at, alive').eq('alive', true),
+    db.from('player_states').select('player_id, states'),
+    db.from('homes').select('player_id'),
+  ]);
+  const runByPlayer = new Map((runs ?? []).map((r) => [r.player_id, r]));
+  const stateByPlayer = new Map((states ?? []).map((s) => [s.player_id, s]));
+  const homeSet = new Set((homes ?? []).map((h) => h.player_id));
+  return (players ?? []).map((p) => {
+    const run = runByPlayer.get(p.id);
+    const st = stateByPlayer.get(p.id);
+    const health = (st?.states as BiologicalState[] | undefined)?.find((s) => s.key === 'health')?.value ?? 0;
+    return {
+      playerId: p.id,
+      survivedDays: Math.floor((now - new Date(run?.started_at ?? now).getTime()) / 86400000),
+      hasHome: homeSet.has(p.id),
+      health: Math.round(health),
+      alive: run?.alive ?? false,
+    };
+  });
+}
+
+async function handleAdminListMedicines(db: SupabaseClient, payload: { password: string }) {
+  if (!(await requireAdmin(payload.password))) return 'admin_forbidden';
+  const { data } = await db.from('medicines').select('*').order('created_at', { ascending: false }).limit(500);
+  return (data ?? []).map((m) => ({
+    id: m.id,
+    name: m.name,
+    creatorPlayerId: m.creator_player_id,
+    knownEffects: (m.known_effects ?? []).length,
+    hiddenEffects: (m.hidden_effects ?? []).length,
+    createdAt: m.created_at,
+  }));
+}
+
+async function handleAdminListMaterials(db: SupabaseClient, payload: { password: string }) {
+  if (!(await requireAdmin(payload.password))) return 'admin_forbidden';
+  const { data } = await db.from('materials').select('id, name, category, biome_type').limit(1000);
+  return (data ?? []).map((m) => ({ id: m.id, name: m.name, category: m.category, biomeType: m.biome_type }));
 }
 
 async function handleClaimHome(db: SupabaseClient, playerId: string, pm: ProofWithMode) {
@@ -556,7 +720,7 @@ async function handleGetInventory(db: SupabaseClient, playerId: string) {
 async function handleCraftMedicine(
   db: SupabaseClient,
   playerId: string,
-  payload: { materialIds: string[]; proofWithMode: ProofWithMode }
+  payload: { materialIds: string[]; proofWithMode: ProofWithMode; desiredName?: string }
 ) {
   const { materialIds, proofWithMode: pm } = payload;
   if (!Array.isArray(materialIds) || materialIds.length < MIN_CRAFT_MATERIALS) return 'insufficient_materials';
@@ -592,9 +756,12 @@ async function handleCraftMedicine(
     home.level
   );
 
+  // Право первооткрывателя: имя применяется только если рецепт новый.
+  // ignoreDuplicates: true — если лекарство уже есть, имя/автор не меняются.
+  const desiredName = (payload.desiredName ?? '').trim().slice(0, MAX_MEDICINE_NAME_LENGTH);
   await db.from('medicines').upsert({
     id: recipe.id,
-    name: recipe.name,
+    name: desiredName.length > 0 ? desiredName : recipe.name,
     creator_player_id: playerId,
     input_material_ids: recipe.inputMaterialIds,
     generation_seed: recipe.generationSeed,
@@ -615,22 +782,60 @@ async function handleCraftMedicine(
   return medicineToDto(medicine!);
 }
 
-async function handleGetRats(db: SupabaseClient, playerId: string) {
-  const { data: player } = await db.from('players').select('last_free_rat_at').eq('id', playerId).single();
-  const due = !player?.last_free_rat_at ||
-    Date.now() - new Date(player.last_free_rat_at).getTime() >= FREE_RAT_DRIP_INTERVAL_MS;
-
-  if (due) {
-    await db.from('rats').insert({
-      id: `rat_${playerId}_${Date.now()}`,
+// Пополняет крыс до минимума MIN_RATS, именуя «Крыса N».
+async function topUpRats(db: SupabaseClient, playerId: string, currentCount: number) {
+  const rows = [];
+  for (let i = currentCount; i < MIN_RATS; i++) {
+    const n = i + 1;
+    rows.push({
+      id: `rat_${playerId}_${Date.now()}_${n}`,
       owner_player_id: playerId,
+      name: `Крыса ${n}`,
       state: createInitialStates(),
     });
+  }
+  if (rows.length > 0) await db.from('rats').insert(rows);
+}
+
+async function getRatTestIntervalSec(db: SupabaseClient): Promise<number> {
+  const { data } = await db.from('game_settings').select('value').eq('key', 'rat_test_interval_sec').maybeSingle();
+  const v = Number(data?.value);
+  return Number.isFinite(v) && v > 0 ? v : DEFAULT_RAT_TEST_INTERVAL_SEC;
+}
+
+async function handleGetRats(db: SupabaseClient, playerId: string) {
+  const { data: player } = await db.from('players')
+    .select('last_free_rat_at, last_rat_test_at').eq('id', playerId).single();
+  const { count } = await db.from('rats')
+    .select('id', { count: 'exact', head: true }).eq('owner_player_id', playerId);
+  const due = !player?.last_free_rat_at ||
+    Date.now() - new Date(player.last_free_rat_at).getTime() >= 24 * 60 * 60 * 1000;
+
+  if (due && (count ?? 0) < MIN_RATS) {
+    await topUpRats(db, playerId, count ?? 0);
     await db.from('players').update({ last_free_rat_at: new Date().toISOString() }).eq('id', playerId);
   }
 
-  const { data: rats } = await db.from('rats').select('*').eq('owner_player_id', playerId).order('created_at');
-  return (rats ?? []).map(ratToDto);
+  const [{ data: rats }, testIntervalSec] = await Promise.all([
+    db.from('rats').select('*').eq('owner_player_id', playerId).order('created_at'),
+    getRatTestIntervalSec(db),
+  ]);
+
+  let nextTestAt: string | undefined;
+  if (player?.last_rat_test_at) {
+    const next = new Date(player.last_rat_test_at).getTime() + testIntervalSec * 1000;
+    if (next > Date.now()) nextTestAt = new Date(next).toISOString();
+  }
+
+  return { rats: (rats ?? []).map(ratToDto), nextTestAt, testIntervalSec };
+}
+
+async function handleRenameRat(db: SupabaseClient, playerId: string, payload: { ratId: string; name: string }) {
+  const { data: rat } = await db.from('rats').select('*').eq('id', payload.ratId).maybeSingle();
+  if (!rat || rat.owner_player_id !== playerId) return 'not_owned_rat';
+  const name = (payload.name ?? '').trim().slice(0, MAX_RAT_NAME_LENGTH) || rat.name || 'Крыса';
+  const { data: updated } = await db.from('rats').update({ name }).eq('id', payload.ratId).select('*').single();
+  return ratToDto(updated!);
 }
 
 async function handleTestRat(
@@ -649,13 +854,22 @@ async function handleTestRat(
 
   const { data: rat } = await db.from('rats').select('*').eq('id', ratId).maybeSingle();
   if (!rat || rat.owner_player_id !== playerId) return 'not_owned_rat';
+  if (!rat.alive) return 'rat_dead';
+
+  // Таймаут испытаний (админ-управляемый).
+  const { data: player } = await db.from('players').select('last_rat_test_at').eq('id', playerId).single();
+  const testIntervalSec = await getRatTestIntervalSec(db);
+  const now = Date.now();
+  if (player?.last_rat_test_at && now - new Date(player.last_rat_test_at).getTime() < testIntervalSec * 1000) {
+    return 'rat_test_cooldown';
+  }
 
   const hidden: ActiveEffect[] = medicine.hidden_effects ?? [];
   let revealedEffect: ActiveEffect | undefined;
   let ratAlive = rat.alive;
-  let updatedRatState = rat.state;
+  let updatedRatState: BiologicalState[] = rat.state;
 
-  if (hidden.length > 0 && rat.alive) {
+  if (hidden.length > 0) {
     const idx = Math.floor(Math.random() * hidden.length);
     revealedEffect = hidden[idx];
     const remaining = hidden.filter((_, i) => i !== idx);
@@ -674,8 +888,17 @@ async function handleTestRat(
     }).eq('id', ratId);
   }
 
+  // 30% шанс израсходовать 1 ед. лекарства.
+  const medicineConsumed = Math.random() < MEDICINE_CONSUME_CHANCE;
+  if (medicineConsumed) {
+    await db.from('inventories').update({ quantity: stack.quantity - 1 })
+      .eq('player_id', playerId).eq('item_id', medicineId);
+  }
+
+  await db.from('players').update({ last_rat_test_at: new Date(now).toISOString() }).eq('id', playerId);
+
   await db.from('experiments').insert({
-    id: `exp_${medicineId}_${Date.now()}`,
+    id: `exp_${medicineId}_${now}`,
     player_id: playerId,
     medicine_id: medicineId,
     rat_id: ratId,
@@ -684,7 +907,13 @@ async function handleTestRat(
   });
 
   const { data: updatedRat } = await db.from('rats').select('*').eq('id', ratId).single();
-  return { revealedEffect, ratAlive, rat: ratToDto(updatedRat!) };
+  return {
+    revealedEffect,
+    ratAlive,
+    rat: ratToDto(updatedRat!),
+    medicineConsumed,
+    nextTestAt: new Date(now + testIntervalSec * 1000).toISOString(),
+  };
 }
 
 async function handleApplyMedicine(db: SupabaseClient, playerId: string, payload: { medicineId: string }) {
@@ -783,18 +1012,48 @@ Deno.serve(async (req: Request) => {
         return ok(await handleGetInventory(db, playerId));
       case 'craftMedicine': {
         const result = await handleCraftMedicine(
-          db, playerId, payload as unknown as { materialIds: string[]; proofWithMode: ProofWithMode }
+          db, playerId, payload as unknown as { materialIds: string[]; proofWithMode: ProofWithMode; desiredName?: string }
         );
         return typeof result === 'string' ? fail(result) : ok(result);
       }
       case 'getRats':
         return ok(await handleGetRats(db, playerId));
+      case 'renameRat': {
+        const result = await handleRenameRat(db, playerId, payload as unknown as { ratId: string; name: string });
+        return typeof result === 'string' ? fail(result) : ok(result);
+      }
       case 'testRat': {
         const result = await handleTestRat(db, playerId, payload as unknown as { medicineId: string; ratId: string });
         return typeof result === 'string' ? fail(result) : ok(result);
       }
       case 'applyMedicine': {
         const result = await handleApplyMedicine(db, playerId, payload as unknown as { medicineId: string });
+        return typeof result === 'string' ? fail(result) : ok(result);
+      }
+      case 'adminSetRatTestInterval': {
+        const result = await handleAdminSetRatTestInterval(db, payload as unknown as { intervalSec: number; password: string });
+        return typeof result === 'string' ? fail(result) : ok(result);
+      }
+      case 'adminCreateEvent': {
+        const result = await handleAdminCreateEvent(
+          db, playerId, payload as unknown as { lat: number; lng: number; radiusKm: number; severity: number; password: string }
+        );
+        return typeof result === 'string' ? fail(result) : ok(result);
+      }
+      case 'adminDeleteEvent': {
+        const result = await handleAdminDeleteEvent(db, payload as unknown as { eventId: string; password: string });
+        return typeof result === 'string' ? fail(result) : ok(result);
+      }
+      case 'adminListPlayers': {
+        const result = await handleAdminListPlayers(db, payload as unknown as { password: string });
+        return typeof result === 'string' ? fail(result) : ok(result);
+      }
+      case 'adminListMedicines': {
+        const result = await handleAdminListMedicines(db, payload as unknown as { password: string });
+        return typeof result === 'string' ? fail(result) : ok(result);
+      }
+      case 'adminListMaterials': {
+        const result = await handleAdminListMaterials(db, payload as unknown as { password: string });
         return typeof result === 'string' ? fail(result) : ok(result);
       }
       default:

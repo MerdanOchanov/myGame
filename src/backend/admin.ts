@@ -1,11 +1,21 @@
 import { Biome, RGB, BiomeType, clampCollectInterval } from '../core/biome/Biome';
 import { createBiomeOnBlocks, AdminBiomeError } from '../core/biome/BiomeService';
 import { generateMaterialPool } from '../core/materials/MaterialGenerator';
+import {
+  GameEvent, clampEventRadiusKm, clampEventSeverity,
+} from '../core/events/GameEvent';
+import { fnv1aHash } from '../core/shared/Random';
 import { db, biomeRepository, materialRepository } from './db';
+import { AdminPlayerSummary, AdminMedicineSummary, AdminMaterialSummary } from './types';
 
 const WORLD_SEED = 'scientists-world-v1';
 
-export type AdminError = AdminBiomeError | 'admin_forbidden' | 'unknown_biome' | 'no_biomes';
+export type AdminError =
+  | AdminBiomeError | 'admin_forbidden' | 'unknown_biome' | 'no_biomes' | 'unknown_event';
+
+function ok(password: string): boolean {
+  return Boolean(password);
+}
 
 export interface AdminBiomeSpec {
   blockIds: string[];
@@ -68,4 +78,95 @@ export async function adminSetCollectInterval(
 
   biome.collectIntervalSec = clampCollectInterval(payload.collectIntervalSec);
   return biome;
+}
+
+// ---------------------------------------------------------- rat-test timeout
+export async function adminSetRatTestInterval(
+  _playerId: string,
+  payload: { intervalSec: number; password: string }
+): Promise<{ ratTestIntervalSec: number } | AdminError> {
+  if (!ok(payload.password)) return 'admin_forbidden';
+  db.ratTestIntervalSec = clampCollectInterval(payload.intervalSec); // тот же диапазон 1..3600
+  return { ratTestIntervalSec: db.ratTestIntervalSec };
+}
+
+// ------------------------------------------------------------------- events
+export async function adminCreateEvent(
+  playerId: string,
+  payload: { lat: number; lng: number; radiusKm: number; severity: number; password: string }
+): Promise<GameEvent | AdminError> {
+  if (!ok(payload.password)) return 'admin_forbidden';
+  const now = new Date();
+  const seed = `event_${fnv1aHash(`${payload.lat},${payload.lng},${now.getTime()}`).toString(36)}`;
+  const event: GameEvent = {
+    id: seed,
+    basePosition: { lat: payload.lat, lng: payload.lng },
+    radiusKm: clampEventRadiusKm(payload.radiusKm),
+    seed,
+    severity: clampEventSeverity(payload.severity),
+    createdAt: now.toISOString(),
+  };
+  db.eventsById.set(event.id, event);
+  void playerId;
+  return event;
+}
+
+export async function adminDeleteEvent(
+  _playerId: string,
+  payload: { eventId: string; password: string }
+): Promise<{ deleted: string } | AdminError> {
+  if (!ok(payload.password)) return 'admin_forbidden';
+  if (!db.eventsById.has(payload.eventId)) return 'unknown_event';
+  db.eventsById.delete(payload.eventId);
+  return { deleted: payload.eventId };
+}
+
+// ------------------------------------------------------------- read panels
+export async function adminListPlayers(
+  _playerId: string,
+  payload: { password: string }
+): Promise<AdminPlayerSummary[] | AdminError> {
+  if (!ok(payload.password)) return 'admin_forbidden';
+  const now = Date.now();
+  return [...db.players.values()].map((p) => {
+    const run = db.survivalRuns.get(p.id);
+    const state = db.playerStates.get(p.id);
+    const health = state?.states.find((s) => s.key === 'health')?.value ?? 0;
+    const startedAt = run ? new Date(run.startedAt).getTime() : now;
+    return {
+      playerId: p.id,
+      survivedDays: Math.floor((now - startedAt) / 86400000),
+      hasHome: db.homesByPlayerId.has(p.id),
+      health: Math.round(health),
+      alive: run?.alive ?? true,
+    };
+  });
+}
+
+export async function adminListMedicines(
+  _playerId: string,
+  payload: { password: string }
+): Promise<AdminMedicineSummary[] | AdminError> {
+  if (!ok(payload.password)) return 'admin_forbidden';
+  return [...db.medicinesById.values()].map((m) => ({
+    id: m.id,
+    name: m.name,
+    creatorPlayerId: m.creatorPlayerId,
+    knownEffects: m.knownEffects.length,
+    hiddenEffects: m.hiddenEffects.length,
+    createdAt: m.createdAt,
+  }));
+}
+
+export async function adminListMaterials(
+  _playerId: string,
+  payload: { password: string }
+): Promise<AdminMaterialSummary[] | AdminError> {
+  if (!ok(payload.password)) return 'admin_forbidden';
+  return [...db.materialsById.values()].map((m) => ({
+    id: m.id,
+    name: m.name,
+    category: m.category,
+    biomeType: m.biomeType,
+  }));
 }

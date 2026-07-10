@@ -39,12 +39,16 @@ const ERROR_RU: Record<string, string> = {
   not_owned_medicine: 'у вас нет этого лекарства',
   not_owned_rat: 'это не ваша крыса',
   rat_dead: 'эта крыса погибла',
+  rat_test_cooldown: 'испытания на паузе — подождите',
   admin_forbidden: 'неверный админ-пароль',
-  too_few_blocks: 'слишком маленький участок (нужно минимум 5 блоков)',
-  too_many_blocks: 'слишком большой участок (максимум 40 блоков)',
+  too_few_blocks: 'слишком маленький участок',
+  too_many_blocks: 'слишком большой участок',
   bad_block_ids: 'некорректное выделение',
   blocks_taken: 'часть блоков уже занята другим биомом',
   biome_exists: 'такой биом уже существует',
+  no_biomes: 'не удалось разбить участок на биомы',
+  unknown_event: 'событие не найдено',
+  event_failed: 'не удалось создать событие',
   internal_error: 'внутренняя ошибка сервера',
 };
 
@@ -78,6 +82,11 @@ export class HudRoot {
   private adminColor: { r: number; g: number; b: number } | null = null;
   /** Момент, когда снова можно собирать (мс epoch); null — можно сейчас. */
   private nextCollectAtMs: number | null = null;
+  /** Момент, когда снова можно испытывать на крысе (мс epoch); null — можно. */
+  private nextRatTestAtMs: number | null = null;
+  /** id события, о приближении которого уже предупредили (чтобы не спамить). */
+  private warnedEventId: string | null = null;
+  private insideEventId: string | null = null;
 
   private constructor(
     uiRootEl: HTMLElement,
@@ -125,10 +134,11 @@ export class HudRoot {
       () => void this.handleTransfer()
     );
     this.inventoryPanel = new InventoryPanel();
-    this.craftPanel = new CraftPanel((ids) => void this.handleCraft(ids));
+    this.craftPanel = new CraftPanel((ids, name) => void this.handleCraft(ids, name));
     this.labPanel = new LabPanel(
       (medicineId, ratId) => void this.handleTest(medicineId, ratId),
-      (medicineId) => void this.handleApply(medicineId)
+      (medicineId) => void this.handleApply(medicineId),
+      (ratId, name) => void this.handleRenameRat(ratId, name)
     );
     this.adminTool = new AdminTool({
       onStartSelection: () => this.startAdminSelection(),
@@ -136,6 +146,12 @@ export class HudRoot {
       onCreateBiome: (password, intervalSec) => void this.handleCreateBiome(password, intervalSec),
       onSetCollectInterval: (password, biomeId, intervalSec) =>
         void this.handleSetCollectInterval(password, biomeId, intervalSec),
+      onSetRatTestInterval: (password, intervalSec) => void this.handleSetRatTestInterval(password, intervalSec),
+      onStartEventPlacement: () => this.startEventPlacement(),
+      onCreateEvent: (password, radiusKm, severity) => void this.handleCreateEvent(password, radiusKm, severity),
+      onListPlayers: (password) => this.client.adminListPlayers(password),
+      onListMedicines: (password) => this.client.adminListMedicines(password),
+      onListMaterials: (password) => this.client.adminListMaterials(password),
     });
 
     uiRootEl.append(this.toasts.element, this.topBar.element, this.actionBar.element, this.drawer.element);
@@ -152,26 +168,29 @@ export class HudRoot {
     hud.topBar.updateState(session.playerState);
     await hud.refreshInventoryAndLab();
     setInterval(() => void hud.refreshSilently(), POLL_INTERVAL_MS);
-    setInterval(() => hud.tickCollectCooldown(), 1000);
+    setInterval(() => hud.tickCooldowns(), 1000);
     return hud;
   }
 
-  /** Ежесекундный тик обратного отсчёта на кнопке «Собрать». */
-  private tickCollectCooldown(): void {
-    if (this.nextCollectAtMs === null) return;
-    const remaining = (this.nextCollectAtMs - Date.now()) / 1000;
-    if (remaining <= 0) {
-      this.nextCollectAtMs = null;
-      this.actionBar.setCollectCooldown(null);
-    } else {
-      this.actionBar.setCollectCooldown(remaining);
-    }
+  /** Ежесекундный тик обратных отсчётов: сбор и испытания на крысах. */
+  private tickCooldowns(): void {
+    const collectRemaining = this.nextCollectAtMs === null ? null : (this.nextCollectAtMs - Date.now()) / 1000;
+    if (collectRemaining !== null && collectRemaining <= 0) this.nextCollectAtMs = null;
+    this.actionBar.setCollectCooldown(this.nextCollectAtMs === null ? null : collectRemaining);
+
+    const testRemaining = this.nextRatTestAtMs === null ? null : (this.nextRatTestAtMs - Date.now()) / 1000;
+    if (testRemaining !== null && testRemaining <= 0) this.nextRatTestAtMs = null;
+    this.labPanel.setTestCooldown(this.nextRatTestAtMs === null ? null : testRemaining);
   }
 
   private setNextCollectAt(iso: string | undefined): void {
     this.nextCollectAtMs = iso ? new Date(iso).getTime() : null;
-    this.tickCollectCooldown();
-    if (this.nextCollectAtMs === null) this.actionBar.setCollectCooldown(null);
+    this.tickCooldowns();
+  }
+
+  private setNextRatTestAt(iso: string | undefined): void {
+    this.nextRatTestAtMs = iso ? new Date(iso).getTime() : null;
+    this.tickCooldowns();
   }
 
   // ------------------------------------------------------------ навигация
@@ -252,18 +271,38 @@ export class HudRoot {
       this.hasCenteredOnce = true;
     }
     this.mapView.showBiomes(layers.biomes);
+    this.mapView.showEvents(layers.events);
     this.mapView.showCurrentBlock(this.currentBlockId);
     this.mapView.showHomes(layers.nearbyHomes, this.client.currentPlayerId);
     this.phaserLayer.syncGlowToPosition(this.mapView, layers.playerHexCell.center);
+
+    // Предупреждение о приближении события (за пол-радиуса) — один раз на событие.
+    if (layers.approachingEventId && this.warnedEventId !== layers.approachingEventId) {
+      this.warnedEventId = layers.approachingEventId;
+      this.toasts.show('⚠️ Приближается глобальное событие — держитесь подальше!', 'error');
+    }
+    if (!layers.approachingEventId && !layers.insideEventId) this.warnedEventId = null;
+
+    // Внутри события: постепенный урон. Обновляем здоровье и предупреждаем.
+    if (layers.insideEventId) {
+      if (this.insideEventId !== layers.insideEventId) {
+        this.insideEventId = layers.insideEventId;
+        this.toasts.show('☢️ Вы внутри события! Состояние ухудшается — уходите из зоны.', 'error');
+      }
+      if (layers.playerState) this.topBar.updateState(layers.playerState);
+    } else {
+      this.insideEventId = null;
+    }
 
     this.updateHomePanel();
   }
 
   private async refreshInventoryAndLab(): Promise<void> {
-    const [inventory, rats] = await Promise.all([this.client.getInventory(), this.client.getRats()]);
+    const [inventory, ratsView] = await Promise.all([this.client.getInventory(), this.client.getRats()]);
     this.inventoryPanel.update(inventory);
     this.craftPanel.update(inventory);
-    this.labPanel.update(rats, inventory);
+    this.labPanel.update(ratsView.rats, inventory);
+    this.setNextRatTestAt(ratsView.nextTestAt);
   }
 
   // -------------------------------------------------------------- действия
@@ -314,18 +353,37 @@ export class HudRoot {
     }
   }
 
-  private async handleCraft(materialIds: string[]): Promise<void> {
+  private async handleCraft(materialIds: string[], desiredName: string): Promise<void> {
     try {
-      const result = await this.client.craftMedicine(materialIds);
+      const result = await this.client.craftMedicine(materialIds, desiredName);
       if (typeof result === 'string') {
         this.toasts.show(`Крафт не удался: ${ru(result)}`, 'error');
         await this.refreshInventoryAndLab();
         return;
       }
-      this.toasts.show(`⚗️ Создано: ${result.name} (шанс был ${Math.round(result.successChance * 100)}%)`, 'success');
+      const mine = result.creatorPlayerId === this.client.currentPlayerId;
+      this.toasts.show(
+        `⚗️ Создано: ${result.name} (шанс был ${Math.round(result.successChance * 100)}%)` +
+        (mine ? ' — вы первооткрыватель!' : ' — рецепт уже был открыт ранее'),
+        'success'
+      );
       await this.refreshInventoryAndLab();
     } catch (err) {
       this.toasts.show(`Крафт не удался: ${ru(err)}`, 'error');
+    }
+  }
+
+  private async handleRenameRat(ratId: string, name: string): Promise<void> {
+    try {
+      const result = await this.client.renameRat(ratId, name);
+      if (typeof result === 'string') {
+        this.toasts.show(`Не удалось переименовать: ${ru(result)}`, 'error');
+        return;
+      }
+      this.toasts.show(`🐀 Крыса переименована: ${result.name}`, 'success');
+      await this.refreshInventoryAndLab();
+    } catch (err) {
+      this.toasts.show(`Не удалось переименовать: ${ru(err)}`, 'error');
     }
   }
 
@@ -344,6 +402,8 @@ export class HudRoot {
     } else {
       this.toasts.show('Все эффекты уже раскрыты.', 'info');
     }
+    if (result.medicineConsumed) this.toasts.show('🧫 Лекарство израсходовано в ходе испытания.', 'info');
+    this.setNextRatTestAt(result.nextTestAt);
     await this.refreshInventoryAndLab();
   }
 
@@ -453,6 +513,52 @@ export class HudRoot {
       await this.refreshSilently();
     } catch (err) {
       this.toasts.show(`Интервал не обновлён: ${ru(err)}`, 'error');
+    }
+  }
+
+  private async handleSetRatTestInterval(password: string, intervalSec: number): Promise<void> {
+    if (!password) {
+      this.toasts.show('Введите админ-пароль.', 'error');
+      return;
+    }
+    try {
+      const result = await this.client.adminSetRatTestInterval(intervalSec, password);
+      if (typeof result === 'string') {
+        this.toasts.show(`Таймаут не обновлён: ${ru(result)}`, 'error');
+        return;
+      }
+      this.toasts.show(`⏱️ Пауза между испытаниями: ${result.ratTestIntervalSec} с`, 'success');
+    } catch (err) {
+      this.toasts.show(`Таймаут не обновлён: ${ru(err)}`, 'error');
+    }
+  }
+
+  private startEventPlacement(): void {
+    this.toasts.show('Кликните по карте — центр события.', 'info');
+    this.mapView.startPointSelection((lat, lng) => this.adminTool.setEventCenter(lat, lng));
+  }
+
+  private async handleCreateEvent(password: string, radiusKm: number, severity: number): Promise<void> {
+    if (!password) {
+      this.toasts.show('Введите админ-пароль.', 'error');
+      return;
+    }
+    const center = this.adminTool.getEventCenter();
+    if (!center) {
+      this.toasts.show('Сначала укажите центр события кликом по карте.', 'error');
+      return;
+    }
+    try {
+      const result = await this.client.adminCreateEvent(center.lat, center.lng, radiusKm, severity, password);
+      if (typeof result === 'string') {
+        this.toasts.show(`Событие не создано: ${ru(result)}`, 'error');
+        return;
+      }
+      this.toasts.show(`☢️ Событие создано (ур. ${result.severity}, R≈${Math.round(result.radiusKm)} км).`, 'success');
+      this.adminTool.clearEventCenter();
+      await this.refreshSilently();
+    } catch (err) {
+      this.toasts.show(`Событие не создано: ${ru(err)}`, 'error');
     }
   }
 }

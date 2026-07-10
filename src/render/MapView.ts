@@ -2,6 +2,7 @@ import * as L from 'leaflet';
 import { hexCellBoundary, blockCells } from '../core/geo/HexGrid';
 import { LaboratoryHome } from '../core/home/LaboratoryHome';
 import { Biome, RGB, BIOME_COLORS, BIOME_LABELS_RU } from '../core/biome/Biome';
+import { EventView } from '../backend/types';
 
 export interface MapViewCallbacks {
   onMapClick?: (lat: number, lng: number) => void;
@@ -42,6 +43,7 @@ export class MapView {
   private readonly biomeLayer: L.LayerGroup;
   private readonly blockLayer: L.LayerGroup;
   private readonly homeLayer: L.LayerGroup;
+  private readonly eventLayer: L.LayerGroup;
   private playerMarker: L.CircleMarker | null = null;
 
   // admin rectangle selection state
@@ -49,6 +51,10 @@ export class MapView {
   private selectionFirstCorner: L.LatLng | null = null;
   private selectionRect: L.Rectangle | null = null;
   private onSelectionComplete: ((bounds: RectBounds) => void) | null = null;
+
+  // admin single-point selection (центр события)
+  private pointSelectActive = false;
+  private onPointSelect: ((lat: number, lng: number) => void) | null = null;
 
   private readonly restoredView: boolean;
 
@@ -78,10 +84,19 @@ export class MapView {
     }).addTo(this.map);
 
     this.biomeLayer = L.layerGroup().addTo(this.map);
+    this.eventLayer = L.layerGroup().addTo(this.map);
     this.blockLayer = L.layerGroup().addTo(this.map);
     this.homeLayer = L.layerGroup().addTo(this.map);
 
     this.map.on('click', (e: L.LeafletMouseEvent) => {
+      if (this.pointSelectActive) {
+        this.pointSelectActive = false;
+        this.map.getContainer().style.cursor = '';
+        const cb = this.onPointSelect;
+        this.onPointSelect = null;
+        cb?.(e.latlng.lat, e.latlng.lng);
+        return;
+      }
       if (this.selectionActive) {
         this.handleSelectionClick(e.latlng);
         return;
@@ -150,6 +165,22 @@ export class MapView {
     }
   }
 
+  /** События: красные шестигранники (позиция уже сдвинута дрейфом). */
+  showEvents(events: EventView[]): void {
+    this.eventLayer.clearLayers();
+    for (const { event, hexagon } of events) {
+      L.polygon(hexagon, {
+        color: '#e53935',
+        weight: 2,
+        fillColor: '#e53935',
+        fillOpacity: 0.18,
+        dashArray: '6 4',
+      })
+        .bindTooltip(`☢️ Событие (ур. ${event.severity}, R≈${Math.round(event.radiusKm)} км)`, { sticky: true })
+        .addTo(this.eventLayer);
+    }
+  }
+
   /** Подсветка текущего блока игрока: контур блока + тонкая сетка его 7 ячеек. */
   showCurrentBlock(blockId: string | null): void {
     this.blockLayer.clearLayers();
@@ -202,6 +233,14 @@ export class MapView {
   }
 
   // ------------------------------------------------ admin: выделение рамкой
+
+  /** Один клик по карте → точка; колбэк получает координаты (центр события). */
+  startPointSelection(onPick: (lat: number, lng: number) => void): void {
+    this.cancelRectangleSelection();
+    this.pointSelectActive = true;
+    this.onPointSelect = onPick;
+    this.map.getContainer().style.cursor = 'crosshair';
+  }
 
   /** Два клика по карте → прямоугольник; колбэк получает его границы. */
   startRectangleSelection(onComplete: (bounds: RectBounds) => void): void {

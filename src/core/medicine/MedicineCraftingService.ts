@@ -14,10 +14,15 @@ export type CraftError = 'insufficient_materials';
 // (flagged judgment call: the docs don't disambiguate this split).
 const RULES_VERSION = 'v1';
 
+export const MAX_MEDICINE_NAME_LENGTH = 40;
+
+// desiredName применяется только когда лекарство создаётся впервые (право
+// первооткрывателя); проверку «рецепт ещё не открыт» делает backend по id.
 export function craftMedicine(
   materials: Material[],
   playerId: string,
   homeLevel: number,
+  desiredName?: string,
   now: Date = new Date()
 ): Medicine | CraftError {
   if (materials.length < MIN_CRAFT_MATERIALS) return 'insufficient_materials';
@@ -30,9 +35,10 @@ export function craftMedicine(
   const stabilityPercent = Math.round(recipeRandom() * 40 + 40); // 40-80%, deterministic per recipe
 
   const seedHash = fnv1aHash(generationSeed);
+  const cleanName = (desiredName ?? '').trim().slice(0, MAX_MEDICINE_NAME_LENGTH);
   return {
     id: `medicine_${seedHash}`,
-    name: `Unknown Compound #${seedHash.toString(36).slice(0, 5)}`,
+    name: cleanName.length > 0 ? cleanName : `Unknown Compound #${seedHash.toString(36).slice(0, 5)}`,
     creatorPlayerId: playerId,
     inputMaterialIds: sortedIds,
     generationSeed,

@@ -6,6 +6,7 @@ import { GeoProofWithMode } from '../core/geo/GeoPosition';
 import { MapLayers, ViewBounds } from './types';
 import { db, homeRepository } from './db';
 import { resolveHex, GeoError } from './geo';
+import { computeEventLayer } from './events';
 
 const NEARBY_HOME_RADIUS_METERS = 1000; // ARCHITECTURE §3/§12
 
@@ -63,11 +64,14 @@ export async function getMapLayers(
     if (next > Date.now()) nextCollectAt = new Date(next).toISOString();
   }
 
+  const eventLayer = computeEventLayer(playerId, cell.center, viewBounds, new Date());
+
   return {
     playerHexCell: { ...cell, blockId, biomeId: biome?.id },
     biome,
     biomes,
     nearbyHomes,
     nextCollectAt,
+    ...eventLayer,
   };
 }

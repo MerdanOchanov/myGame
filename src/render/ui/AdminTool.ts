@@ -2,6 +2,9 @@ import {
   RGB, Biome, BIOME_LABELS_RU, MIN_BIOME_CELLS, MAX_BIOME_CELLS, CELLS_PER_BLOCK, MIN_AREA_COVERAGE,
   DEFAULT_COLLECT_INTERVAL_SEC, MIN_COLLECT_INTERVAL_SEC, MAX_COLLECT_INTERVAL_SEC, clampCollectInterval,
 } from '../../core/biome/Biome';
+import { MIN_EVENT_RADIUS_KM, MAX_EVENT_RADIUS_KM } from '../../core/events/GameEvent';
+import { AdminPlayerSummary, AdminMedicineSummary, AdminMaterialSummary } from '../../backend/types';
+import { AdminError } from '../../backend/admin';
 import { ensureStylesInjected } from './styles';
 
 const PASSWORD_STORAGE_KEY = 'scientists-world:adminPassword';
@@ -16,6 +19,12 @@ export interface AdminToolCallbacks {
   onCancelSelection: () => void;
   onCreateBiome: (password: string, collectIntervalSec: number) => void;
   onSetCollectInterval: (password: string, biomeId: string, collectIntervalSec: number) => void;
+  onSetRatTestInterval: (password: string, intervalSec: number) => void;
+  onStartEventPlacement: () => void;
+  onCreateEvent: (password: string, radiusKm: number, severity: number) => void;
+  onListPlayers: (password: string) => Promise<AdminPlayerSummary[] | AdminError>;
+  onListMedicines: (password: string) => Promise<AdminMedicineSummary[] | AdminError>;
+  onListMaterials: (password: string) => Promise<AdminMaterialSummary[] | AdminError>;
 }
 
 // Панель админа: пароль, выделение участка двумя кликами, предпросмотр
@@ -33,6 +42,13 @@ export class AdminTool {
   private selecting = false;
   private selection: AdminSelection | null = null;
   private currentBiome: Biome | null = null;
+
+  private readonly eventRadiusInput: HTMLInputElement;
+  private readonly eventSeverityInput: HTMLInputElement;
+  private readonly eventCenterEl: HTMLDivElement;
+  private readonly ratTestInput: HTMLInputElement;
+  private readonly listEl: HTMLDivElement;
+  private eventCenter: { lat: number; lng: number } | null = null;
 
   constructor(private readonly callbacks: AdminToolCallbacks) {
     ensureStylesInjected();
@@ -134,6 +150,130 @@ export class AdminTool {
     });
     setRow.appendChild(this.setIntervalBtn);
     this.element.appendChild(setRow);
+
+    // ================= Испытания на крысах (таймаут) =================
+    this.element.appendChild(sectionTitle('🐀 Таймаут испытаний на крысах'));
+    const ratRow = document.createElement('div');
+    ratRow.className = 'sw-row';
+    ratRow.append('Пауза между тестами, сек: ');
+    this.ratTestInput = document.createElement('input');
+    this.ratTestInput.type = 'number';
+    this.ratTestInput.min = '1';
+    this.ratTestInput.max = '3600';
+    this.ratTestInput.step = '1';
+    this.ratTestInput.value = '30';
+    this.ratTestInput.style.width = '5em';
+    ratRow.appendChild(this.ratTestInput);
+    const ratBtn = document.createElement('button');
+    ratBtn.className = 'sw-btn-secondary';
+    ratBtn.textContent = 'Применить';
+    ratBtn.addEventListener('click', () =>
+      this.callbacks.onSetRatTestInterval(this.passwordInput.value, Math.floor(Number(this.ratTestInput.value) || 30))
+    );
+    ratRow.appendChild(ratBtn);
+    this.element.appendChild(ratRow);
+
+    // ================= Глобальные события =================
+    this.element.appendChild(sectionTitle('☢️ Глобальное событие'));
+    const evBtnRow = document.createElement('div');
+    evBtnRow.className = 'sw-row';
+    const pickBtn = document.createElement('button');
+    pickBtn.className = 'sw-btn-secondary';
+    pickBtn.textContent = '📍 Центр (клик по карте)';
+    pickBtn.addEventListener('click', () => this.callbacks.onStartEventPlacement());
+    evBtnRow.appendChild(pickBtn);
+    this.element.appendChild(evBtnRow);
+
+    const evParamsRow = document.createElement('div');
+    evParamsRow.className = 'sw-row';
+    evParamsRow.append('R, км: ');
+    this.eventRadiusInput = document.createElement('input');
+    this.eventRadiusInput.type = 'number';
+    this.eventRadiusInput.min = String(MIN_EVENT_RADIUS_KM);
+    this.eventRadiusInput.max = String(MAX_EVENT_RADIUS_KM);
+    this.eventRadiusInput.step = '1';
+    this.eventRadiusInput.value = '500';
+    this.eventRadiusInput.style.width = '6em';
+    evParamsRow.appendChild(this.eventRadiusInput);
+    evParamsRow.append(' Сила (1–3): ');
+    this.eventSeverityInput = document.createElement('input');
+    this.eventSeverityInput.type = 'number';
+    this.eventSeverityInput.min = '1';
+    this.eventSeverityInput.max = '3';
+    this.eventSeverityInput.step = '1';
+    this.eventSeverityInput.value = '1';
+    this.eventSeverityInput.style.width = '4em';
+    evParamsRow.appendChild(this.eventSeverityInput);
+    this.element.appendChild(evParamsRow);
+
+    this.eventCenterEl = document.createElement('div');
+    this.eventCenterEl.className = 'sw-card sw-muted';
+    this.eventCenterEl.textContent = 'Центр не выбран. Событие будет хаотично дрейфовать по миру.';
+    this.element.appendChild(this.eventCenterEl);
+
+    const createEvBtn = document.createElement('button');
+    createEvBtn.className = 'sw-btn';
+    createEvBtn.textContent = 'Создать событие';
+    createEvBtn.addEventListener('click', () =>
+      this.callbacks.onCreateEvent(
+        this.passwordInput.value,
+        Number(this.eventRadiusInput.value) || 500,
+        Math.floor(Number(this.eventSeverityInput.value) || 1)
+      )
+    );
+    this.element.appendChild(createEvBtn);
+
+    // ================= Просмотр (списки) =================
+    this.element.appendChild(sectionTitle('📋 Просмотр'));
+    const listBtnRow = document.createElement('div');
+    listBtnRow.className = 'sw-row';
+    listBtnRow.appendChild(this.makeListButton('Игроки', () => this.callbacks.onListPlayers(this.passwordInput.value), renderPlayers));
+    listBtnRow.appendChild(this.makeListButton('Лекарства', () => this.callbacks.onListMedicines(this.passwordInput.value), renderMedicines));
+    listBtnRow.appendChild(this.makeListButton('Материалы', () => this.callbacks.onListMaterials(this.passwordInput.value), renderMaterials));
+    this.element.appendChild(listBtnRow);
+
+    this.listEl = document.createElement('div');
+    this.listEl.className = 'sw-card sw-muted';
+    this.listEl.textContent = 'Выберите список.';
+    this.element.appendChild(this.listEl);
+  }
+
+  private makeListButton<T>(
+    label: string,
+    fetch: () => Promise<T[] | AdminError>,
+    render: (rows: T[]) => string
+  ): HTMLButtonElement {
+    const btn = document.createElement('button');
+    btn.className = 'sw-btn-secondary';
+    btn.textContent = label;
+    btn.addEventListener('click', async () => {
+      this.listEl.textContent = 'Загрузка…';
+      try {
+        const rows = await fetch();
+        if (typeof rows === 'string') {
+          this.listEl.textContent = rows === 'admin_forbidden' ? 'Неверный админ-пароль.' : String(rows);
+          return;
+        }
+        this.listEl.innerHTML = rows.length ? render(rows) : 'Пусто.';
+      } catch (err) {
+        this.listEl.textContent = `Ошибка: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    });
+    return btn;
+  }
+
+  setEventCenter(lat: number, lng: number): void {
+    this.eventCenter = { lat, lng };
+    this.eventCenterEl.textContent = `Центр: ${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+  }
+
+  getEventCenter(): { lat: number; lng: number } | null {
+    return this.eventCenter;
+  }
+
+  clearEventCenter(): void {
+    this.eventCenter = null;
+    this.eventCenterEl.textContent = 'Центр не выбран. Событие будет хаотично дрейфовать по миру.';
   }
 
   /** Вызывается HudRoot при каждом обновлении карты. */
@@ -190,4 +330,33 @@ export class AdminTool {
     this.selection = null;
     this.createBtn.disabled = true;
   }
+}
+
+function sectionTitle(text: string): HTMLElement {
+  const el = document.createElement('h4');
+  el.textContent = text;
+  el.style.margin = '14px 0 6px';
+  return el;
+}
+
+function esc(s: string): string {
+  return s.replace(/[&<>]/g, (c) => (c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;'));
+}
+
+function renderPlayers(rows: AdminPlayerSummary[]): string {
+  return rows
+    .map((p) => `<div>${p.alive ? '🟢' : '💀'} <b>${esc(p.playerId.slice(-8))}</b> — ${p.survivedDays} дн., ❤️${p.health}${p.hasHome ? ', 🏠' : ''}</div>`)
+    .join('');
+}
+
+function renderMedicines(rows: AdminMedicineSummary[]): string {
+  return rows
+    .map((m) => `<div>💊 <b>${esc(m.name)}</b> <span class="sw-muted">(${m.knownEffects}/${m.knownEffects + m.hiddenEffects} эфф., автор ${esc(m.creatorPlayerId.slice(-6))})</span></div>`)
+    .join('');
+}
+
+function renderMaterials(rows: AdminMaterialSummary[]): string {
+  return rows
+    .map((m) => `<div>🧪 <b>${esc(m.name)}</b> <span class="sw-muted">(${esc(m.category)}, ${esc(m.biomeType)})</span></div>`)
+    .join('');
 }

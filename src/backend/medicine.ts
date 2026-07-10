@@ -15,7 +15,8 @@ export type ApplyMedicineError = 'not_owned';
 export async function craftMedicine(
   playerId: string,
   materialIds: string[],
-  proofWithMode: GeoProofWithMode
+  proofWithMode: GeoProofWithMode,
+  desiredName?: string
 ): Promise<Medicine | MedicineCraftError> {
   const cell = await resolveHex(playerId, proofWithMode);
   if (typeof cell === 'string') return cell;
@@ -31,14 +32,18 @@ export async function craftMedicine(
     materials.push(material);
   }
 
-  const result = craftMedicineService(materials, playerId, home.level);
+  const result = craftMedicineService(materials, playerId, home.level, desiredName);
   if (typeof result === 'string') return result;
 
   if (!removeMaterialsFromInventory(playerId, materialIds)) return 'insufficient_materials';
 
-  db.medicinesById.set(result.id, result);
-  addMedicineToInventory(playerId, result.id, 1);
-  return result;
+  // Право первооткрывателя: имя/автор закрепляются только при первом создании
+  // рецепта; повторный крафт другими возвращает существующее лекарство.
+  const existing = db.medicinesById.get(result.id);
+  const medicine = existing ?? result;
+  if (!existing) db.medicinesById.set(result.id, result);
+  addMedicineToInventory(playerId, medicine.id, 1);
+  return medicine;
 }
 
 export async function applyMedicine(playerId: string, medicineId: string): Promise<ApplyMedicineResult | ApplyMedicineError> {

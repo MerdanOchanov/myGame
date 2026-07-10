@@ -9,15 +9,17 @@ import { LaboratoryHome } from '../core/home/LaboratoryHome';
 import { Medicine } from '../core/medicine/Medicine';
 import { LabRat } from '../core/lab/LabRat';
 import {
-  PlayerSession, MapLayers, MaterialCollectionResult, InventoryView, ApplyMedicineResult, RatTestResult, ViewBounds,
+  PlayerSession, MapLayers, MaterialCollectionResult, InventoryView, ApplyMedicineResult, RatTestResult,
+  RatsView, ViewBounds, AdminPlayerSummary, AdminMedicineSummary, AdminMaterialSummary,
 } from '../backend/types';
 import type { GeoError } from '../backend/geo';
 import type { CollectError } from '../backend/materials';
 import type { MedicineCraftError, ApplyMedicineError } from '../backend/medicine';
-import type { LabTestError } from '../backend/lab';
+import type { LabTestError, RenameRatError } from '../backend/lab';
 import type { AdminError, AdminBiomeSpec, AdminBatchResult } from '../backend/admin';
 import type { HomeClaimError } from '../core/home/HomeClaimService';
 import type { Biome } from '../core/biome/Biome';
+import type { GameEvent } from '../core/events/GameEvent';
 
 const url = import.meta.env.VITE_SUPABASE_URL;
 const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -112,6 +114,48 @@ export async function adminSetCollectInterval(
   return invoke<Biome>('adminSetCollectInterval', payload) as Promise<Biome | AdminError>;
 }
 
+export async function adminSetRatTestInterval(
+  _playerId: string,
+  payload: { intervalSec: number; password: string }
+): Promise<{ ratTestIntervalSec: number } | AdminError> {
+  return invoke<{ ratTestIntervalSec: number }>('adminSetRatTestInterval', payload) as Promise<{ ratTestIntervalSec: number } | AdminError>;
+}
+
+export async function adminCreateEvent(
+  _playerId: string,
+  payload: { lat: number; lng: number; radiusKm: number; severity: number; password: string }
+): Promise<GameEvent | AdminError> {
+  return invoke<GameEvent>('adminCreateEvent', payload) as Promise<GameEvent | AdminError>;
+}
+
+export async function adminDeleteEvent(
+  _playerId: string,
+  payload: { eventId: string; password: string }
+): Promise<{ deleted: string } | AdminError> {
+  return invoke<{ deleted: string }>('adminDeleteEvent', payload) as Promise<{ deleted: string } | AdminError>;
+}
+
+export async function adminListPlayers(
+  _playerId: string,
+  payload: { password: string }
+): Promise<AdminPlayerSummary[] | AdminError> {
+  return invoke<AdminPlayerSummary[]>('adminListPlayers', payload) as Promise<AdminPlayerSummary[] | AdminError>;
+}
+
+export async function adminListMedicines(
+  _playerId: string,
+  payload: { password: string }
+): Promise<AdminMedicineSummary[] | AdminError> {
+  return invoke<AdminMedicineSummary[]>('adminListMedicines', payload) as Promise<AdminMedicineSummary[] | AdminError>;
+}
+
+export async function adminListMaterials(
+  _playerId: string,
+  payload: { password: string }
+): Promise<AdminMaterialSummary[] | AdminError> {
+  return invoke<AdminMaterialSummary[]>('adminListMaterials', payload) as Promise<AdminMaterialSummary[] | AdminError>;
+}
+
 export async function collectMaterial(
   _playerId: string,
   proofWithMode: GeoProofWithMode
@@ -128,9 +172,10 @@ export async function getInventory(_playerId: string): Promise<InventoryView> {
 export async function craftMedicine(
   _playerId: string,
   materialIds: string[],
-  proofWithMode: GeoProofWithMode
+  proofWithMode: GeoProofWithMode,
+  desiredName?: string
 ): Promise<Medicine | MedicineCraftError> {
-  return invoke<Medicine>('craftMedicine', { materialIds, proofWithMode }) as Promise<Medicine | MedicineCraftError>;
+  return invoke<Medicine>('craftMedicine', { materialIds, proofWithMode, desiredName }) as Promise<Medicine | MedicineCraftError>;
 }
 
 export async function applyMedicine(
@@ -140,10 +185,18 @@ export async function applyMedicine(
   return invoke<ApplyMedicineResult>('applyMedicine', { medicineId }) as Promise<ApplyMedicineResult | ApplyMedicineError>;
 }
 
-export async function getRats(_playerId: string): Promise<LabRat[]> {
-  const result = await invoke<LabRat[]>('getRats');
+export async function getRats(_playerId: string): Promise<RatsView> {
+  const result = await invoke<RatsView>('getRats');
   if (typeof result === 'string') throw new Error(`Rats fetch failed: ${result}`);
   return result;
+}
+
+export async function renameRat(
+  _playerId: string,
+  ratId: string,
+  name: string
+): Promise<LabRat | RenameRatError> {
+  return invoke<LabRat>('renameRat', { ratId, name }) as Promise<LabRat | RenameRatError>;
 }
 
 export async function testMedicineOnRat(

@@ -1,16 +1,18 @@
 import { InventoryView } from '../../../backend/types';
-import { MIN_CRAFT_MATERIALS } from '../../../core/medicine/MedicineCraftingService';
+import { MIN_CRAFT_MATERIALS, MAX_MEDICINE_NAME_LENGTH } from '../../../core/medicine/MedicineCraftingService';
 import { ensureStylesInjected } from '../styles';
 
-// Панель «Крафт»: выбор количества каждого материала (+/-), крафт из 3+.
+// Панель «Крафт»: выбор количества каждого материала (+/-), крафт из 3+,
+// необязательное имя (закрепится, если рецепт открывается впервые).
 export class CraftPanel {
   readonly element: HTMLDivElement;
   private readonly listEl: HTMLDivElement;
   private readonly craftBtn: HTMLButtonElement;
   private readonly totalEl: HTMLSpanElement;
+  private readonly nameInput: HTMLInputElement;
   private selectedCounts = new Map<string, number>();
 
-  constructor(onCraft: (materialIds: string[]) => void) {
+  constructor(onCraft: (materialIds: string[], desiredName: string) => void) {
     ensureStylesInjected();
 
     this.element = document.createElement('div');
@@ -24,6 +26,16 @@ export class CraftPanel {
     this.listEl = document.createElement('div');
     this.element.appendChild(this.listEl);
 
+    const nameRow = document.createElement('div');
+    nameRow.className = 'sw-row';
+    this.nameInput = document.createElement('input');
+    this.nameInput.type = 'text';
+    this.nameInput.maxLength = MAX_MEDICINE_NAME_LENGTH;
+    this.nameInput.placeholder = 'Название (если открываете первым)';
+    this.nameInput.style.flex = '1';
+    nameRow.appendChild(this.nameInput);
+    this.element.appendChild(nameRow);
+
     const row = document.createElement('div');
     row.className = 'sw-row';
     this.craftBtn = document.createElement('button');
@@ -35,7 +47,7 @@ export class CraftPanel {
       for (const [id, count] of this.selectedCounts) {
         for (let i = 0; i < count; i++) ids.push(id);
       }
-      onCraft(ids);
+      onCraft(ids, this.nameInput.value.trim());
     });
     row.appendChild(this.craftBtn);
 

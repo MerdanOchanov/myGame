@@ -2,9 +2,20 @@ import { ActiveEffect, applyEffectToState, PlayerState } from '../player/PlayerS
 import { createLabRat, LabRat } from './LabRat';
 
 export const FREE_RAT_DRIP_INTERVAL_MS = 24 * 60 * 60 * 1000; // TZ §21: free periodic drip
+export const MIN_RATS = 3; // минимально выдаваемое количество крыс
 
-export function createStarterRat(playerId: string, now: Date = new Date()): LabRat {
-  return createLabRat(`rat_${playerId}_${now.getTime()}`, playerId, now);
+// Создаёт `count` крыс с последовательными именами «Крыса N» (N — от startIndex).
+export function createStarterRats(playerId: string, count: number, startIndex = 1, now: Date = new Date()): LabRat[] {
+  const rats: LabRat[] = [];
+  for (let i = 0; i < count; i++) {
+    const n = startIndex + i;
+    rats.push(createLabRat(`rat_${playerId}_${now.getTime()}_${n}`, playerId, `Крыса ${n}`, now));
+  }
+  return rats;
+}
+
+export function createStarterRat(playerId: string, name: string, now: Date = new Date()): LabRat {
+  return createLabRat(`rat_${playerId}_${now.getTime()}`, playerId, name, now);
 }
 
 export function isFreeRatDue(lastGrantedAt: string | undefined, now: Date = new Date()): boolean {

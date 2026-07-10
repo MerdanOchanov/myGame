@@ -116,6 +116,30 @@ export class GameClient {
     return backend.adminSetCollectInterval(this.currentPlayerId, { biomeId, collectIntervalSec, password });
   }
 
+  async adminSetRatTestInterval(intervalSec: number, password: string) {
+    return backend.adminSetRatTestInterval(this.currentPlayerId, { intervalSec, password });
+  }
+
+  async adminCreateEvent(lat: number, lng: number, radiusKm: number, severity: number, password: string) {
+    return backend.adminCreateEvent(this.currentPlayerId, { lat, lng, radiusKm, severity, password });
+  }
+
+  async adminDeleteEvent(eventId: string, password: string) {
+    return backend.adminDeleteEvent(this.currentPlayerId, { eventId, password });
+  }
+
+  async adminListPlayers(password: string) {
+    return backend.adminListPlayers(this.currentPlayerId, { password });
+  }
+
+  async adminListMedicines(password: string) {
+    return backend.adminListMedicines(this.currentPlayerId, { password });
+  }
+
+  async adminListMaterials(password: string) {
+    return backend.adminListMaterials(this.currentPlayerId, { password });
+  }
+
   async collectMaterial() {
     return backend.collectMaterial(this.currentPlayerId, await this.currentProof());
   }
@@ -124,8 +148,8 @@ export class GameClient {
     return backend.getInventory(this.currentPlayerId);
   }
 
-  async craftMedicine(materialIds: string[]) {
-    return backend.craftMedicine(this.currentPlayerId, materialIds, await this.currentProof());
+  async craftMedicine(materialIds: string[], desiredName?: string) {
+    return backend.craftMedicine(this.currentPlayerId, materialIds, await this.currentProof(), desiredName);
   }
 
   async applyMedicine(medicineId: string) {
@@ -134,6 +158,10 @@ export class GameClient {
 
   async getRats() {
     return backend.getRats(this.currentPlayerId);
+  }
+
+  async renameRat(ratId: string, name: string) {
+    return backend.renameRat(this.currentPlayerId, ratId, name);
   }
 
   async testMedicineOnRat(medicineId: string, ratId: string) {

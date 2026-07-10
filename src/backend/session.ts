@@ -1,7 +1,7 @@
 import { createPlayer } from '../core/player/Player';
 import { createInitialPlayerState } from '../core/player/PlayerState';
 import { startSurvivalRun } from '../core/player/SurvivalRun';
-import { createStarterRat } from '../core/lab/RatStateService';
+import { createStarterRats, MIN_RATS } from '../core/lab/RatStateService';
 import { db, getOrCreateInventory } from './db';
 import { PlayerSession } from './types';
 
@@ -19,11 +19,10 @@ export async function createOrResumeSession(deviceId: string, now: Date = new Da
     db.survivalRuns.set(playerId, startSurvivalRun(playerId, now));
     getOrCreateInventory(playerId);
 
-    // Starter rat auto-granted at bootstrap (flagged: TZ §16 step 12 never
-    // states how the player's first rat appears).
-    const starterRat = createStarterRat(playerId, now);
-    db.ratsByPlayerId.set(playerId, [starterRat]);
-    db.ratsById.set(starterRat.id, starterRat);
+    // Минимум 3 крысы на старте (TZ §21: минимально выдаваемое количество).
+    const starterRats = createStarterRats(playerId, MIN_RATS, 1, now);
+    db.ratsByPlayerId.set(playerId, starterRats);
+    for (const rat of starterRats) db.ratsById.set(rat.id, rat);
     db.lastFreeRatGrantByPlayerId.set(playerId, now.toISOString());
   }
 

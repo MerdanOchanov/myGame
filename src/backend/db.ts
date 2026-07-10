@@ -10,8 +10,11 @@ import { MaterialRepository, KnowledgeProfileRepository } from '../core/material
 import { Medicine } from '../core/medicine/Medicine';
 import { LabRat } from '../core/lab/LabRat';
 import { Experiment } from '../core/lab/ExperimentService';
+import { GameEvent } from '../core/events/GameEvent';
 import { GeoProof } from '../core/geo/GeoPosition';
 import { Inventory } from './types';
+
+export const DEFAULT_RAT_TEST_INTERVAL_SEC = 30;
 
 // Single in-memory "Game Data" store standing in for the future Supabase
 // backend (ARCHITECTURE §2/§4). Nothing here is persisted across reloads.
@@ -38,9 +41,15 @@ class GameDatabase {
   readonly ratsByPlayerId = new Map<string, LabRat[]>();
   readonly ratsById = new Map<string, LabRat>();
   readonly lastFreeRatGrantByPlayerId = new Map<string, string>();
+  readonly lastRatTestAtByPlayerId = new Map<string, number>();
   readonly experiments: Experiment[] = [];
 
   readonly inventories = new Map<string, Inventory>();
+
+  // Глобальные события (дрейфуют детерминированно) и админ-настройки.
+  readonly eventsById = new Map<string, GameEvent>();
+  readonly lastEventTickAtByPlayerId = new Map<string, number>();
+  ratTestIntervalSec = DEFAULT_RAT_TEST_INTERVAL_SEC;
 }
 
 export const db = new GameDatabase();
